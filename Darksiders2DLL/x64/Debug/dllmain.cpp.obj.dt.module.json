@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "Darksiders2DLL\\x64\\Debug\\dllmain.obj",
+            "outputs": [
+                "Darksiders2DLL\\x64\\Debug\\dllmain.cpp.obj.dt.module.json",
+                "Darksiders2DLL\\x64\\Debug\\dllmain.cpp.obj.dt.d.json",
+                "Darksiders2DLL\\x64\\Debug\\Darksiders2DLL.pch"
+            ],
+            "requires": []
+        }
+    ]
+}
