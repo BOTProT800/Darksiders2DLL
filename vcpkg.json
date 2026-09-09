@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "darksiders2-runtime-loader",
+  "version-string": "0.1.0",
+  "description": "Reproducible native dependencies for the Darksiders II dinput8 proxy.",
+  "dependencies": [
+    "minhook"
+  ]
+}

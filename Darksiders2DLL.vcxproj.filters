@@ -15,19 +15,38 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="bootstrap.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
     <ClInclude Include="framework.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
     <ClInclude Include="pch.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
+    <ClInclude Include="proxy_dinput8.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="bootstrap.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
     <ClCompile Include="dllmain.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
+    <ClCompile Include="proxy_dinput8.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="dinput8.def">
+      <Filter>Archivos de origen</Filter>
+    </None>
+    <None Include="vcpkg-configuration.json" />
+    <None Include="vcpkg.json" />
   </ItemGroup>
 </Project>

@@ -1,19 +1,19 @@
-// dllmain.cpp : Define el punto de entrada de la aplicación DLL.
 #include "pch.h"
 
-BOOL APIENTRY DllMain( HMODULE hModule,
-                       DWORD  ul_reason_for_call,
-                       LPVOID lpReserved
-                     )
+#include "proxy_dinput8.h"
+
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) noexcept
 {
-    switch (ul_reason_for_call)
+    UNREFERENCED_PARAMETER(reserved);
+
+    if (reason == DLL_PROCESS_ATTACH)
     {
-    case DLL_PROCESS_ATTACH:
-    case DLL_THREAD_ATTACH:
-    case DLL_THREAD_DETACH:
-    case DLL_PROCESS_DETACH:
-        break;
+        ds2::proxy::SetProxyModule(module);
+        DisableThreadLibraryCalls(module);
     }
+
+    // Loading the real dinput8.dll and starting the mod framework here would
+    // run arbitrary work while the Windows loader lock is held. Both actions
+    // are intentionally deferred to the exported DirectInput8Create wrapper.
     return TRUE;
 }
-
