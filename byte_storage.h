@@ -19,6 +19,8 @@ enum class ByteLoadError {
     reparse_point,
     not_regular_file,
     metadata_failed,
+    final_path_failed,
+    outside_root,
     empty_file,
     file_too_large,
     allocation_failed,
@@ -40,8 +42,13 @@ public:
     [[nodiscard]] const std::wstring& Sha256Hex() const noexcept { return sha256_hex_; }
 
 private:
+    friend struct ByteStorageAccess;
     friend struct ByteLoadResult;
     friend ByteLoadResult LoadByteStorage(const std::filesystem::path&, std::uint64_t);
+    friend ByteLoadResult LoadByteStorageUnderRoot(
+        const std::filesystem::path&,
+        const std::filesystem::path&,
+        std::uint64_t);
 
     ByteStorage(std::vector<std::byte> bytes, Sha256Digest digest);
 
@@ -65,6 +72,16 @@ struct ByteLoadResult final {
 // The handle denies concurrent writers so the snapshot cannot contain a torn
 // read. Empty files are rejected because they cannot be valid asset overrides.
 [[nodiscard]] ByteLoadResult LoadByteStorage(
+    const std::filesystem::path& path,
+    std::uint64_t max_file_size = 128ull * 1024ull * 1024ull);
+
+// Opens both root and path and compares the normalized final names obtained
+// from their handles before reading. This closes the gap between a lexical
+// containment check and opening the asset: an intermediate directory that is
+// replaced with a reparse point cannot redirect the read outside root. Both
+// root and the final asset component must not themselves be reparse points.
+[[nodiscard]] ByteLoadResult LoadByteStorageUnderRoot(
+    const std::filesystem::path& root,
     const std::filesystem::path& path,
     std::uint64_t max_file_size = 128ull * 1024ull * 1024ull);
 

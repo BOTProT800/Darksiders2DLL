@@ -5,7 +5,8 @@ third-party source code has been copied into this repository at this stage.
 
 - **MinHook**, by Tsuda Kageyu and contributors. MinHook is consumed through
   vcpkg and remains subject to its upstream 2-clause BSD license. Its license
-  file is installed alongside the vcpkg package metadata.
+  file is installed alongside the vcpkg package metadata and reproduced in
+  `THIRD_PARTY_NOTICES.md` for binary redistribution.
 - **Microsoft Windows SDK, DirectInput, MSVC, and vcpkg**, used to build and
   implement the `dinput8.dll` proxy.
 - **Darkstractor** and **DarksideModManager**, local MIT-licensed projects used

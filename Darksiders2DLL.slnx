@@ -1,7 +1,8 @@
 <Solution>
   <Configurations>
     <Platform Name="x64" />
-    <Platform Name="x86" />
   </Configurations>
+  <Project Path="Darksiders2DLL.ProxySmoke.vcxproj" />
+  <Project Path="Darksiders2DLL.Tests.vcxproj" />
   <Project Path="Darksiders2DLL.vcxproj" />
 </Solution>

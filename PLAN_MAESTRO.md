@@ -1,6 +1,6 @@
 # Plan maestro actualizado: DLL de modding para Darksiders II – Deathinitive Edition (PC)
 
-> Estado verificado localmente: 8 de septiembre de 2026. Este documento sustituye el borrador especulativo anterior. Las rutas, hashes y offsets marcados como confirmados se obtuvieron de los archivos presentes en este equipo. No se ha modificado la instalación del juego durante esta revisión.
+> Estado verificado localmente: 11 de septiembre de 2026. Este documento sustituye el borrador especulativo anterior. Las rutas, hashes y offsets marcados como confirmados se obtuvieron de los archivos presentes en este equipo. El proxy y `first_test_mod` ya están desplegados; los `.upak` permanecen intactos.
 
 ## 1. Objetivo
 
@@ -36,7 +36,7 @@ La primera prueba controlada será el mod `first_test_mod`, que reemplazará el 
 - DarksideModManager: `C:\Users\vicen\Documents\Proyectos\Software\DarksideModManager`
 - Anansi: `C:\Users\vicen\Documents\Proyectos\Software\Anansi`
 
-La instalación se detecta correctamente desde Steam. Actualmente no contiene un `dinput8.dll` local, no tiene carpeta `mods` y DarksideModManager informa que no hay modificaciones instaladas.
+La instalación se detecta correctamente desde Steam. Actualmente contiene el proxy local `dinput8.dll` y el DDS bajo `mods\first_test_mod\...`. DarksideModManager sigue informando que no hay modificaciones permanentes instaladas porque el despliegue no altera sus paquetes. Los `.upak` conservaron tamaño y fecha durante el despliegue y la actualización del proxy.
 
 ### 2.2 Huella de la versión que se investigará
 
@@ -60,16 +60,36 @@ El nombre correcto es `anim_streams.upak`; el borrador anterior decía por error
 
 ### 2.3 Estado real del proyecto C++
 
-El workspace contiene todavía la plantilla básica de DLL de Visual Studio:
+El proyecto x64 ya está implementado y compila en Debug y Release:
 
-- C++20 y configuraciones Win32/x64.
-- `Debug|x64` usa `/MT`.
-- `Release|x64` no fija aún `/MT` y debe corregirse.
-- `dllmain.cpp` no inicializa MinHook ni implementa el proxy.
-- No hay `vcpkg.json` ni integración de MinHook verificable en el proyecto actual.
-- El nombre de salida todavía no está configurado como `dinput8.dll`.
+- C++20, configuraciones x64 soportadas y CRT estática `/MT` en Debug y Release.
+- Salida `dinput8.dll` con los seis exports del proxy conservados por nombre y ordinal.
+- Carga del `dinput8.dll` real mediante ruta absoluta a `System32`.
+- MinHook estático y fijado mediante el manifiesto/baseline de vcpkg.
+- Huella SHA-256 del ejecutable con comportamiento *fail-closed* para builds desconocidos.
+- Logger por sesión, índice inmutable y seguro de mods, límites de recursos, validación DDS y almacenamiento estable de bytes.
+- Prueba de concepto de reemplazo exacto en D3DX9 y D3DX11: solo sustituye el DDS original de `4,224` bytes y SHA-256 conocido por el DDS editado también conocido.
+- Trampolines publicados mediante variables atómicas y activación conjunta de D3DX9/D3DX11 con `MH_QueueEnableHook` más una única llamada a `MH_ApplyQueued`.
+- Rollback compensatorio; si su resultado es indeterminado, el reemplazo se descarta y el estado queda *fail-closed* para el resto del proceso.
+- Validación del rango fuente seguida de una copia completa con `ReadProcessMemory` antes de calcular el hash, para que una lectura parcial o inválida produzca passthrough seguro.
+- Eventos de primera entrada independientes para D3DX9 y D3DX11; el callback del detour solo publica estado y despierta al worker de logging.
+- Pruebas offline y de humo del proxy para Debug/Release; el proxy Release superó `20/20` ciclos consecutivos de la prueba de humo.
 
-Por tanto, “MinHook ya instalado y configurado” deja de ser una suposición del plan y pasa a ser trabajo explícito de la fase de preparación.
+El binario Release final tiene SHA-256 `8CE46A305F62BC862EEBE2B70D5A5D1ECF0EBE4ECA0F264DE3F1473383F3DBDA`; esa misma huella está desplegada como `dinput8.dll` junto al ejecutable del juego.
+
+El bootstrap se programa desde `DLL_PROCESS_ATTACH` mediante un worker y se vuelve a intentar desde `DirectInput8Create` si la programación inicial falla. `DllMain` no abre logs, no calcula hashes, no recorre carpetas, no inicializa MinHook y no espera al worker: únicamente guarda el módulo y solicita la creación asíncrona. Las notificaciones de hilo permanecen activas porque ambas configuraciones enlazan la CRT estática `/MT`. El trabajo real comienza después de que el loader libere su bloqueo.
+
+Las ejecuciones reales confirmaron en el log `BUILD_SUPPORTED`, `MOD_INDEXED first_test_mod`, `ASSET_OVERRIDE_READY` y `TEXTURE_HOOK_ACTIVE` para D3DX9 y D3DX11. Todavía no se ha observado `ASSET_REQUEST`/`ASSET_OVERRIDE_HIT`, ni se ha confirmado visualmente el cambio o el fallback. También faltan reinicios largos. El resolver general del motor y su ABI interna siguen pendientes; el hook D3DX es deliberadamente un POC estrecho para este DDS.
+
+Durante la validación apareció un crash aislado en el PID `16272`: WER registró `0xc0000005` en `Darksiders2.exe+0x9E553F`. Se conservaron el dump `%LOCALAPPDATA%\CrashDumps\Darksiders2.exe.16272.dmp` y el `Report.wer` correspondiente bajo `C:\ProgramData\Microsoft\Windows\WER\ReportArchive`. El incidente no se descarta, pero tampoco se atribuye al proxy o a los hooks con la evidencia actual.
+
+Después del hardening se ejecutó una matriz A/B/C, tres veces por brazo y 15 segundos por ejecución:
+
+- A: vanilla, con `dinput8.dll` temporalmente renombrado.
+- B: proxy activo y DDS objetivo temporalmente renombrado; el bootstrap emitió `ASSET_FALLBACK` y no llamó a `MH_Initialize`.
+- C: proxy y DDS activos, con los hooks D3DX9/D3DX11 activos.
+
+Las nueve ejecuciones fueron estables, terminaron con exit code `0` y no generaron nuevos informes WER. Al acabar se restauraron tanto el proxy como el DDS. Esta matriz corta no reprodujo el crash y acota el riesgo inmediato, aunque no sustituye la prueba visual ni los reinicios prolongados.
 
 ### 2.4 Corpus extraído
 
@@ -209,16 +229,16 @@ QuickBMS, `darksiders2.bms`, DS2Extract, offzip, DS2-RE, Darksiders-2-DLL-Loader
 Darksiders2.exe
   └─ carga .\dinput8.dll
        ├─ Proxy DirectInput → %SystemRoot%\System32\dinput8.dll
-       └─ Bootstrap seguro
+       └─ Programa un worker de bootstrap sin esperarlo en DllMain
             ├─ Huella/compatibilidad del ejecutable
             ├─ Logger
             ├─ Índice inmutable de mods
-            ├─ Escáner de firmas
-            └─ Hook del resolver
-                 ├─ normalizar clave virtual
-                 ├─ buscar override por prioridad
-                 ├─ servir bytes con vida útil correcta
-                 └─ fallback inmediato a la función original
+            ├─ Escáner de firmas preparado para el resolver futuro
+            └─ POC exacto D3DX9/D3DX11
+                 ├─ reconocer tamaño y SHA-256 del DDS original
+                 ├─ usar el override ya validado e indexado
+                 ├─ conservar los bytes con vida útil estable
+                 └─ llamar a D3DX con los argumentos originales si no coincide
 ```
 
 ### 5.1 Reparto propuesto del código
@@ -230,7 +250,7 @@ Darksiders2.exe
 - `mod_index.*`: descubrimiento, prioridad y snapshot inmutable.
 - `virtual_path.*`: normalización y validación de rutas.
 - `signature_scan.*`: búsqueda acotada en `.text` y validación del candidato.
-- `asset_hook.*`: typedef exacto, trampoline y lógica de fallback.
+- `asset_hook.*`: POC exacto D3DX9/D3DX11, trampolines y lógica de fallback; el typedef del resolver interno futuro aún debe investigarse.
 - `byte_storage.*`: propiedad y vida útil de los buffers de reemplazo.
 - `dinput8.def`: lista de exports del proxy.
 - `tests/`: pruebas unitarias que no arrancan ni modifican el juego.
@@ -260,6 +280,8 @@ Reglas:
 
 ### Fase 0 — Congelar una base reproducible
 
+**Estado: completada para el POC x64.** La salida, CRT, dependencia fijada, avisos, huella y proxy ya están implementados y probados.
+
 1. Registrar en el log la huella SHA-256 de `Darksiders2.exe` y rechazar hooks desconocidos por defecto.
 2. Configurar salida x64 con nombre `dinput8.dll`.
 3. Fijar `/MT` en Debug y Release x64; retirar Win32 del camino soportado aunque pueda seguir en la solución.
@@ -267,7 +289,7 @@ Reglas:
 5. Añadir `CREDITS.md` y conservar avisos/licencias si se adapta código MIT de los proyectos locales.
 6. Compilar primero un proxy sin hooks.
 
-Criterio de salida: el juego arranca, conserva teclado/control, crea un log identificable y sale limpiamente con el proxy presente.
+Criterio de salida: el proxy carga en el proceso real, crea un log identificable y mantiene operativo DirectInput. La carga y el log ya se confirmaron; la comprobación interactiva prolongada de teclado/control queda incluida en la validación end-to-end pendiente.
 
 ### Fase 1 — Congelar la evidencia de assets y paquetes
 
@@ -293,11 +315,13 @@ python -B -m darkside install `
 
 Resultado confirmado: un archivo aceptado, miembro `#72`, `64x64 DXT5`, compatible en modo estricto.
 
-Como control A/B opcional, antes del runtime hook se puede instalar temporalmente mediante DarksideModManager, comprobar que el icono correcto cambia y restaurar inmediatamente. Esa prueba debe hacerse con el juego cerrado y usando el flujo de respaldo del manager. Antes de probar la DLL, `darkside status` debe volver a indicar que no hay modificaciones instaladas.
+Como control offline opcional, antes del runtime hook se puede instalar temporalmente mediante DarksideModManager, comprobar que el icono correcto cambia y restaurar inmediatamente. Esa prueba debe hacerse con el juego cerrado y usando el flujo de respaldo del manager. Antes de probar la DLL, `darkside status` debe volver a indicar que no hay modificaciones instaladas.
 
 Criterio de salida: el asset se reconoce visualmente en la situación de juego elegida, o se documenta con precisión cómo provocar su aparición.
 
 ### Fase 3 — Proxy `dinput8` y bootstrap seguro
+
+**Estado: implementada; integración básica y matriz corta validadas en el proceso real.**
 
 1. Reenviar los seis exports del `dinput8.dll` de Windows:
    - `DirectInput8Create`
@@ -307,13 +331,16 @@ Criterio de salida: el asset se reconoce visualmente en la situación de juego e
    - `DllUnregisterServer`
    - `GetdfDIJoystick`
 2. Resolver la DLL real mediante una ruta absoluta obtenida con `GetSystemDirectoryW`; nunca llamar a `LoadLibrary("dinput8.dll")` desde la carpeta del juego, porque recargaría el proxy.
-3. Mantener `DllMain` mínimo: guardar el `HMODULE` y llamar a `DisableThreadLibraryCalls`. No inicializar MinHook, recorrer carpetas, abrir logs complejos ni esperar hilos bajo el *loader lock*.
-4. Ejecutar la inicialización una sola vez fuera de `DllMain`, de forma perezosa desde el primer `DirectInput8Create` o desde un punto equivalente ya fuera del *loader lock*.
-5. En terminación normal del proceso, permitir que Windows recupere recursos; cualquier desinstalación explícita de hooks deberá ocurrir fuera de `DllMain`.
+3. Mantener `DllMain` mínimo: guardar el `HMODULE` y programar un worker. Esa programación no realiza la inicialización en línea. No llamar a `DisableThreadLibraryCalls`, porque el proyecto enlaza la CRT estática y esta puede necesitar las notificaciones de hilo.
+4. Hacer toda la inicialización real en el worker después de salir del *loader lock*. No inicializar MinHook, recorrer carpetas, abrir logs, calcular hashes ni esperar al worker dentro de `DllMain`.
+5. Usar `DirectInput8Create` como punto seguro de reintento si `CreateThread` hubiera fallado durante `DLL_PROCESS_ATTACH`; la inicialización sigue protegida para ejecutarse una sola vez.
+6. En terminación normal del proceso, permitir que Windows recupere recursos; cualquier desinstalación explícita de hooks deberá ocurrir fuera de `DllMain`.
 
-Criterio de salida: todas las exportaciones resuelven, DirectInput sigue funcionando y 20 ciclos de arranque/salida no producen crash ni cuelgue.
+Criterio de salida: todas las exportaciones resuelven, el proxy llama al DirectInput real y las pruebas repetidas no producen un crash reproducible ni un cuelgue. Los seis exports, la ruta de `System32`, una llamada real a `DirectInput8Create`, `20/20` ciclos de humo Release y las nueve ejecuciones de la matriz corta ya están verificados. El crash aislado conserva evidencia para análisis y los reinicios largos del juego aún deben realizarse.
 
 ### Fase 4 — Localizar el punto correcto de hook
+
+**Estado: POC D3DX activo; resolver general pendiente.** Las dos funciones D3DX se interceptan de forma estrecha para reconocer el buffer original exacto. Esto permite probar el primer icono sin afirmar que ya se conoce la firma o ABI del resolver interno.
 
 #### 4.1 Rastrear el segmento conocido
 
@@ -334,7 +361,7 @@ El ejecutable importa rutas de creación de texturas tanto D3DX11 como D3DX9. Po
 
 Buscar llamadas cuyo buffer sea un DDS de `4,224` bytes y cuyo contenido coincida con el SHA-256 original. Caminar la pila hacia atrás hasta la última función del motor que todavía conozca ruta, segmento, índice o identificador del recurso.
 
-Estas APIs son ayudas de instrumentación y, como mucho, un POC exclusivo de texturas. No son el hook general definitivo.
+Estas APIs ya forman el POC exclusivo de texturas. No son el hook general definitivo.
 
 #### 4.3 Validar cada candidato antes de reemplazar
 
@@ -358,6 +385,8 @@ Criterio de salida: el hook pasivo identifica de forma repetible la solicitud ex
 
 ### Fase 5 — Implementar el override de archivos sueltos
 
+**Estado: infraestructura e implementación exacta del primer DDS completadas; adaptación al resolver general pendiente.** El índice seguro se construye al inicio y el POC D3DX consume el snapshot, pero todavía no traduce solicitudes arbitrarias del motor a rutas virtuales.
+
 1. Construir al inicio un snapshot inmutable de `mods\`; no consultar el disco en cada llamada del resolver.
 2. Normalizar la identidad observada en runtime a la clave canónica `media/...`.
 3. Buscar el primer override habilitado según un orden determinista.
@@ -372,14 +401,18 @@ Eventos mínimos de log:
 ```text
 BUILD_SUPPORTED
 MOD_INDEXED first_test_mod
+D3DX11_FIRST_ENTRY
+D3DX9_FIRST_ENTRY
 ASSET_REQUEST media/ui/ui_icons_small/ui_hudicon_passiveability_improved_agility.dds
 ASSET_OVERRIDE_HIT first_test_mod ... size=4224 sha256=2C0D...
 ASSET_FALLBACK <ruta> <motivo>
 ```
 
-Criterio de salida: con el archivo presente solo las solicitudes exactas generan `ASSET_OVERRIDE_HIT`; al retirarlo se obtiene fallback limpio y no cambia el comportamiento original.
+Criterio de salida: con el archivo presente solo las solicitudes exactas generan `ASSET_OVERRIDE_HIT`; al retirarlo se obtiene fallback limpio y no cambia el comportamiento original. La ruta de fallback temprano ya quedó validada por log en el brazo B, pero falta comprobar su resultado visual.
 
 ### Fase 6 — Prueba end-to-end de `first_test_mod`
+
+**Estado al 11 de septiembre de 2026: en curso.** El proxy Release final y el asset están desplegados sin modificar `.upak`. Los logs confirman `BUILD_SUPPORTED`, `MOD_INDEXED first_test_mod`, `ASSET_OVERRIDE_READY` y `TEXTURE_HOOK_ACTIVE`; el brazo B confirmó además `ASSET_FALLBACK` al retirar temporalmente el DDS. La matriz corta A/B/C terminó `9/9` estable, con exit code `0` y sin nuevos WER. Falta provocar la carga concreta del icono, obtener `ASSET_REQUEST` y `ASSET_OVERRIDE_HIT`, comprobar el reemplazo y el fallback visualmente y realizar reinicios largos.
 
 1. Confirmar que DarksideModManager no tiene parches instalados.
 2. Verificar nuevamente el SHA-256 del archivo editado.
@@ -389,8 +422,8 @@ Criterio de salida: con el archivo presente solo las solicitudes exactas generan
 6. Confirmar las dos señales de éxito:
    - El log muestra la ruta canónica y `first_test_mod` como origen.
    - El icono cambia visualmente.
-7. Renombrar temporalmente el DDS o desactivar el mod y confirmar fallback al original.
-8. Repetir cargas de menú/partida y varios reinicios para detectar vida útil incorrecta, cachés o carreras.
+7. Renombrar temporalmente el DDS o desactivar el mod y confirmar visualmente que vuelve el original; el fallback temprano del bootstrap ya está confirmado por log.
+8. Repetir cargas de menú/partida y reinicios de mayor duración para detectar vida útil incorrecta, cachés o carreras.
 
 No considerar éxito una modificación hecha simultáneamente dentro de `media.upak`: eso impediría saber si funcionó la DLL o el parche offline.
 
@@ -440,20 +473,26 @@ Los fixtures deben ser sintéticos o copias mínimas aisladas. No ejecutar prueb
 
 ### En el juego
 
-- Vanilla sin proxy.
-- Proxy, hooks desactivados.
+- Confirmado en matriz corta: vanilla sin proxy, tres ejecuciones de 15 segundos.
+- Confirmado en matriz corta: proxy con DDS ausente, fallback temprano y sin inicializar MinHook, tres ejecuciones de 15 segundos.
+- Confirmado en matriz corta: proxy con DDS presente y hooks D3DX9/D3DX11 activos, tres ejecuciones de 15 segundos.
 - Hook pasivo con logging.
-- `first_test_mod` habilitado.
-- Mod deshabilitado/archivo ausente.
+- `first_test_mod` habilitado y pantalla objetivo abierta hasta obtener `ASSET_REQUEST`/`ASSET_OVERRIDE_HIT`.
+- Mod deshabilitado/archivo ausente con comprobación visual del fallback.
 - Asset inválido: debe rechazarse y caer al original.
-- Varias cargas y cambios de zona/menú.
+- Varias cargas prolongadas y cambios de zona/menú.
+
+La matriz corta completa terminó `9/9` con exit code `0` y sin nuevos WER. El crash aislado del PID `16272` permanece documentado y no se considera explicado por esa ausencia de reproducción.
 
 ## 8. Riesgos y mitigaciones
 
 - **Hook demasiado bajo:** `ReadFile` entrega el stream comprimido compartido. Usarlo solo para rastrear; hookear selección/entrega del miembro.
 - **Firma o ABI incorrectas:** validar registros, stack y varios call sites antes de escribir bytes.
 - **Puntero con vida útil insuficiente:** modelar propiedad del buffer y mantener almacenamiento estable.
-- **Trabajo bajo loader lock:** `DllMain` mínimo; inicialización y teardown fuera de él.
+- **Trabajo bajo loader lock:** `DllMain` solo guarda el módulo y programa el worker sin esperarlo; logs, hashes, índice, MinHook y teardown se ejecutan fuera de él. `DirectInput8Create` permite reintentar la programación. Las notificaciones de hilo permanecen activas por compatibilidad con la CRT estática.
+- **Activación parcial de hooks:** publicar los trampolines de forma atómica, encolar ambos enables y aplicar el conjunto una sola vez; si falla también el rollback compensatorio, descartar el reemplazo y dejar el estado `indeterminate` cerrado a reintentos.
+- **Buffer fuente inválido o cambiante:** validar el rango y copiar los `4,224` bytes completos con `ReadProcessMemory` antes del hash; una copia fallida o parcial hace passthrough.
+- **Crash aislado sin causalidad demostrada:** conservar dump y WER, comparar configuraciones A/B/C y exigir pruebas largas antes de cerrar el riesgo. La matriz corta posterior fue estable, pero no prueba que el incidente sea ajeno al POC.
 - **Actualización del juego:** huella obligatoria y fail-closed sin instalar hooks desconocidos.
 - **Patrón falso positivo:** sección acotada, contexto y coincidencia única.
 - **Ruta runtime sin prefijo `media/`:** registrar el valor crudo y transformarlo solo mediante una regla demostrada; la convención en disco seguirá siendo canónica `media/...`.
@@ -465,29 +504,28 @@ Los fixtures deben ser sintéticos o copias mínimas aisladas. No ejecutar prueb
 
 ## 9. Criterios de finalización del primer hito
 
-El primer hito termina únicamente cuando se cumpla todo lo siguiente:
+El primer hito termina únicamente cuando se cumpla todo lo siguiente. Al 11 de septiembre de 2026, los puntos marcados como confirmados ya tienen evidencia local:
 
-- `dinput8.dll` x64 carga y reenvía DirectInput sin regresiones.
-- El build del juego coincide con la huella soportada.
-- MinHook se inicializa fuera de `DllMain`.
+- Confirmado: `dinput8.dll` x64 carga, conserva los seis exports y reenvía DirectInput al DLL de `System32`.
+- Confirmado: el build del juego coincide con la huella soportada.
+- Confirmado: MinHook y toda operación pesada se inicializan en el worker, fuera de `DllMain`.
 - El hook pasivo identifica de forma estable el asset elegido.
-- `first_test_mod` se indexa desde la ruta canónica correcta.
+- Confirmado: `first_test_mod` se indexa desde la ruta canónica correcta y queda listo para override.
 - El log registra un hit de exactamente `4,224` bytes y el SHA-256 editado.
 - El icono cambia visualmente sin modificar `media.upak`.
 - Al deshabilitar el mod vuelve el original.
-- No hay crashes tras cargas repetidas y reinicios.
+- No hay crashes reproducibles tras cargas repetidas y reinicios largos; el incidente aislado del PID `16272` queda explicado o suficientemente acotado con evidencia.
 - El repositorio contiene instrucciones reproducibles, pruebas, licencias y créditos de todo código o conocimiento adaptado.
 
 ## 10. Orden inmediato recomendado
 
-1. Corregir la configuración x64 (`/MT` Release, nombre `dinput8`, vcpkg/MinHook reproducible).
-2. Implementar y probar solo el proxy con los seis exports.
-3. Añadir fingerprint y logging.
-4. Implementar el índice seguro de `mods\` y preparar `first_test_mod` sin instalarlo todavía.
-5. Hacer instrumentación pasiva usando los offsets conocidos y las balizas D3DX.
-6. Confirmar firma, ABI, hilo y propiedad del buffer.
-7. Activar el override únicamente para el DDS de prueba.
-8. Ejecutar la matriz end-to-end y, después, generalizar.
+1. Arrancar el juego con el proxy desplegado y abrir la pantalla que muestra la habilidad pasiva de agilidad mejorada.
+2. Confirmar `ASSET_REQUEST`, `ASSET_OVERRIDE_HIT` con `size=4224` y el cambio visual.
+3. Retirar o renombrar de forma controlada el DDS del mod y comprobar visualmente el fallback al icono original; el evento de fallback temprano ya está confirmado.
+4. Repetir cargas de menú/partida y reinicios completos de mayor duración para descartar carreras o problemas de vida útil y vigilar nuevos WER.
+5. Si el buffer no llega a D3DX como se espera, usar la telemetría y las balizas de la fase 4 para seguirlo hasta el punto de transformación.
+6. Investigar y validar la firma, ABI, hilo y propiedad del buffer del resolver interno general.
+7. Sustituir o complementar el POC D3DX con el resolver general solo después de esa validación.
 
 ## 11. Prompt de contexto para retomar el proyecto
 
@@ -532,7 +570,26 @@ tamaño 0x52800, layout stream, miembro #72, offset descomprimido 0x4F800.
 ReadFile es solo una baliza: el hook final debe operar después de la
 descompresión/selección del miembro.
 
-Estado actual: [DESCRIBIR FASE, HALLAZGOS, RVA/FIRMA Y ÚLTIMO LOG]
+Estado actual al 11 de septiembre de 2026:
+- Proyecto x64 implementado; Debug/Release usan /MT, MinHook está fijado y
+  las pruebas de ambas configuraciones pasan. Smoke Release: 20/20.
+- dinput8.dll Release SHA-256:
+  8CE46A305F62BC862EEBE2B70D5A5D1ECF0EBE4ECA0F264DE3F1473383F3DBDA
+- Proxy con seis exports y bootstrap worker programado desde DLL_PROCESS_ATTACH;
+  DirectInput8Create vuelve a intentar programarlo si fuera necesario y las
+  notificaciones de hilo permanecen activas para la CRT estática.
+- Índice seguro de mods y POC exacto D3DX9/D3DX11 desplegados.
+- Trampolines atómicos, enable de hooks en una sola cohorte, rollback
+  indeterminate fail-closed, copia validada mediante ReadProcessMemory y
+  eventos de primera entrada D3DX9/D3DX11.
+- first_test_mod está instalado como archivo suelto; los .upak siguen intactos.
+- Los logs confirman BUILD_SUPPORTED, MOD_INDEXED, ASSET_OVERRIDE_READY,
+  TEXTURE_HOOK_ACTIVE y el ASSET_FALLBACK temprano con DDS ausente.
+- Crash aislado PID 16272: c0000005 en Darksiders2.exe+0x9E553F; dump y WER
+  conservados. La matriz posterior A/B/C (3 x 15 s por brazo) terminó 9/9
+  estable, exit 0 y sin nuevos WER, por lo que no se atribuyó causalidad.
+- Pendientes: ASSET_REQUEST/HIT, confirmación visual del reemplazo y fallback,
+  reinicios largos y resolver general/ABI interna.
 ```
 
 ## 12. Créditos y procedencia

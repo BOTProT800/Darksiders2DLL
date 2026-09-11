@@ -206,16 +206,17 @@ extern "C" HRESULT WINAPI DirectInput8Create(
     DWORD version,
     REFIID interfaceId,
     LPVOID* output,
-    LPUNKNOWN outerUnknown) noexcept
+    LPUNKNOWN outerUnknown)
 {
     if (!EnsureSystemDinput8Loaded())
     {
         return SystemDinput8FailureResult();
     }
 
-    // This is an ordinary application call, outside DllMain and the loader lock.
-    // Framework setup is intentionally non-fatal to DirectInput forwarding.
-    ds2::bootstrap::EnsureInitialized();
+    // Do not assume the caller is outside the loader lock: the bootstrap entry
+    // point only schedules a worker and never waits for framework setup.
+    // Initialization remains intentionally non-fatal to DirectInput forwarding.
+    static_cast<void>(ds2::bootstrap::EnsureInitialized());
 
     return g_systemDinput8.direct_input_8_create(
         instance,
@@ -225,7 +226,7 @@ extern "C" HRESULT WINAPI DirectInput8Create(
         outerUnknown);
 }
 
-extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow() noexcept
+extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
 {
     return EnsureSystemDinput8Loaded()
         ? g_systemDinput8.dll_can_unload_now()
@@ -235,28 +236,28 @@ extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow() noexcept
 extern "C" HRESULT STDAPICALLTYPE DllGetClassObject(
     REFCLSID classId,
     REFIID interfaceId,
-    LPVOID* output) noexcept
+    LPVOID* output)
 {
     return EnsureSystemDinput8Loaded()
         ? g_systemDinput8.dll_get_class_object(classId, interfaceId, output)
         : SystemDinput8FailureResult();
 }
 
-extern "C" HRESULT STDAPICALLTYPE DllRegisterServer() noexcept
+extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 {
     return EnsureSystemDinput8Loaded()
         ? g_systemDinput8.dll_register_server()
         : SystemDinput8FailureResult();
 }
 
-extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer() noexcept
+extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
 {
     return EnsureSystemDinput8Loaded()
         ? g_systemDinput8.dll_unregister_server()
         : SystemDinput8FailureResult();
 }
 
-extern "C" LPCDIDATAFORMAT WINAPI GetdfDIJoystick() noexcept
+extern "C" LPCDIDATAFORMAT WINAPI GetdfDIJoystick()
 {
     return EnsureSystemDinput8Loaded()
         ? g_systemDinput8.get_df_di_joystick()
