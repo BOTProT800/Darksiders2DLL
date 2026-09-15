@@ -8,6 +8,7 @@ namespace ds2::bootstrap
         starting,
         ready_proxy_only,
         ready_texture_override,
+        ready_internal_override,
         unsupported_build,
         logging_initialization_failed,
         mod_index_initialization_failed,

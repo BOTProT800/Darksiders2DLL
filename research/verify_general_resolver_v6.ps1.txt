@@ -1,0 +1,110 @@
+[CmdletBinding()]
+param(
+    [string] $MSBuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe',
+    [string] $GameDirectory = 'C:\Program Files (x86)\Steam\steamapps\common\Darksiders II Deathinitive Edition',
+    [string] $AssetSource = 'C:\Users\vicen\Documents\Extractions\Darksiders\media\ui\ui_icons_small\ui_hudicon_passiveability_improved_agility.dds'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$evidenceRoot = Join-Path $projectRoot 'build\validation-v6'
+New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+
+function Get-PackageMetadata {
+    @(Get-ChildItem -LiteralPath (Join-Path $GameDirectory 'media') -Filter '*.upak' -File |
+        Sort-Object Name | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+}
+
+function Build-Variant {
+    param([string] $Name, [string] $Project, [string] $Configuration, [string[]] $Properties = @())
+    $output = (Join-Path $evidenceRoot "$Name\out").Replace('\', '/') + '/'
+    $intermediate = (Join-Path $evidenceRoot "$Name\obj").Replace('\', '/') + '/'
+    $log = Join-Path $evidenceRoot "$Name.build.log"
+    $arguments = @((Join-Path $projectRoot $Project), '/t:Rebuild',
+        "/p:Configuration=$Configuration", '/p:Platform=x64', "/p:OutDir=$output",
+        "/p:IntDir=$intermediate", '/p:BuildProjectReferences=false', '/m', '/v:minimal',
+        "/flp:logfile=$log;verbosity=normal") + $Properties
+    Write-Host "Building $Name"
+    # cmd normalizes duplicate Path/PATH environment keys in this host; clearing
+    # only PowerShell's PATH value does not normalize the inherited environment.
+    $commandParts = @($MSBuild) + $arguments
+    foreach ($part in $commandParts) {
+        if ($part -match '["&|<>^%!\r\n]') { throw 'Unsupported command argument character.' }
+    }
+    $command = 'set PATH=& ' + (($commandParts | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+    & $env:ComSpec /d /s /c $command | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Build failed: $Name ($LASTEXITCODE)" }
+    return $output
+}
+
+function Run-Checked {
+    param([string] $Name, [string] $Executable, [string[]] $Arguments)
+    & $Executable @Arguments | Tee-Object -FilePath (Join-Path $evidenceRoot "$Name.run.log") | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Check failed: $Name ($LASTEXITCODE)" }
+}
+
+$upakBefore = Get-PackageMetadata
+$proxyPath = Join-Path $GameDirectory 'dinput8.dll'
+$proxyBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $proxyPath).Hash
+@{ Packages = $upakBefore; DeployedProxySha256 = $proxyBefore; StartedUtc = [DateTime]::UtcNow } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'installation-before.json')
+$testArguments = @($AssetSource, (Join-Path $GameDirectory 'Darksiders2.exe'), (Join-Path $GameDirectory 'mods'))
+
+$writeTests = Build-Variant 'tests-write' 'Darksiders2DLL.Tests.vcxproj' 'Debug'
+Run-Checked 'tests-write' (Join-Path $writeTests 'offline_tests.exe') $testArguments
+$observeTests = Build-Variant 'tests-observe' 'Darksiders2DLL.Tests.vcxproj' 'Debug' @('/p:TestGeneralResolverWrite=false')
+Run-Checked 'tests-observe' (Join-Path $observeTests 'offline_tests.exe') $testArguments
+$releaseTests = Build-Variant 'tests-release' 'Darksiders2DLL.Tests.vcxproj' 'Release'
+Run-Checked 'tests-release' (Join-Path $releaseTests 'offline_tests.exe') $testArguments
+$smokeDirectory = Build-Variant 'smoke-isolated' 'Darksiders2DLL.ProxySmoke.vcxproj' 'Debug'
+$smoke = Join-Path $smokeDirectory 'proxy_smoke.exe'
+
+$variants = @(
+    @{ Name = 'debug-default'; Configuration = 'Debug'; Properties = @() },
+    @{ Name = 'debug-observe'; Configuration = 'Debug'; Properties = @('/p:EnableGeneralResolverPrototype=true') },
+    @{ Name = 'debug-write'; Configuration = 'Debug'; Properties = @('/p:EnableGeneralResolverWritePrototype=true') },
+    @{ Name = 'debug-identity'; Configuration = 'Debug'; Properties = @('/p:EnableResourceIdentityProbe=true') },
+    @{ Name = 'debug-write-conflict'; Configuration = 'Debug'; Properties = @('/p:EnableGeneralResolverWritePrototype=true', '/p:EnableGeneralResolverPrototype=false', '/p:EnableResourceIdentityProbe=false') },
+    @{ Name = 'release-a'; Configuration = 'Release'; Properties = @() },
+    @{ Name = 'release-b'; Configuration = 'Release'; Properties = @('/p:EnableResourceIdentityProbe=true', '/p:EnableGeneralResolverPrototype=true', '/p:EnableGeneralResolverWritePrototype=true') }
+)
+$results = foreach ($variant in $variants) {
+    $output = Build-Variant $variant.Name 'Darksiders2DLL.vcxproj' $variant.Configuration $variant.Properties
+    $dll = Join-Path $output 'dinput8.dll'
+    Run-Checked $variant.Name $smoke @($dll)
+    [pscustomobject]@{ Name = $variant.Name; Path = $dll; Bytes = (Get-Item -LiteralPath $dll).Length;
+        Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $dll).Hash; Smoke = 'PASS' }
+}
+$releaseA = $results | Where-Object Name -eq 'release-a'
+$releaseB = $results | Where-Object Name -eq 'release-b'
+if ($releaseA.Sha256 -ne $releaseB.Sha256 -or $releaseA.Bytes -ne $releaseB.Bytes) {
+    throw 'Release outputs are not reproducible.'
+}
+foreach ($name in @('release-a', 'release-b')) {
+    $variantRoot = Join-Path $evidenceRoot $name
+    $forbiddenObjects = @(Get-ChildItem -LiteralPath (Join-Path $variantRoot 'obj') -Filter '*.obj' |
+        Where-Object BaseName -in @('general_dds_candidate', 'package_dds_contract', 'package_identity_catalog', 'resource_identity'))
+    if ($forbiddenObjects.Count -ne 0) { throw "Prototype object found in $name" }
+    $commands = (Get-ChildItem -LiteralPath (Join-Path $variantRoot 'obj') -Filter '*.command.1.tlog' -Recurse |
+        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
+    if ([string]::IsNullOrWhiteSpace($commands)) { throw "Missing compiler/link evidence for $name" }
+    if ($commands -match 'DS2_GENERAL_RESOLVER|DS2_RESOURCE_IDENTITY_PROBE|\bzs\.lib\b|\bzlib\b') {
+        throw "Prototype macro or zlib link found in $name"
+    }
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $variantRoot 'out\dinput8.dll'))
+    foreach ($encoding in @([Text.Encoding]::ASCII, [Text.Encoding]::Unicode)) {
+        # GENERAL_RESOLVER_LIMITED is the pre-existing exact-override log tag,
+        # also present in the stable Release. It is not a prototype feature.
+        if ($encoding.GetString($bytes) -match 'GENERAL_DDS_|GENERAL_RESOLVER_(?!LIMITED\b)|RESOURCE_IDENTITY_|general_write_|general_writes_|general_candidate_|inflateInit_|zlibVersion|Debug-only verified catalog|general DDS resolver is observe-only|verified_general_sha256_debug|exact_sha256\+general_observe') {
+            throw "Prototype or zlib marker found in $name"
+        }
+    }
+}
+$upakAfter = Get-PackageMetadata
+if (Compare-Object $upakBefore $upakAfter) { throw 'Package metadata changed during offline verification.' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $proxyPath).Hash -ne $proxyBefore) {
+    throw 'Installed proxy changed during offline verification.'
+}
+$results | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceRoot 'artifacts.json')
+Write-Host "PASS: offline write/observation/Release, 7 proxy variants, reproducible Release without prototypes/zlib. Evidence: $evidenceRoot"

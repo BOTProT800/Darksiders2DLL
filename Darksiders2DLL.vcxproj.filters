@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Archivos de origen">
@@ -36,9 +36,29 @@
     <ClInclude Include="proxy_dinput8.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
+    <ClInclude Include="package_identity_catalog.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
+    <ClInclude Include="package_dds_contract.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
+    <ClInclude Include="resource_identity.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
+    <ClInclude Include="resolver_probe.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
+    <ClInclude Include="resolver_probe_filter.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
     <ClInclude Include="game_build.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
+    <ClInclude Include="general_dds_candidate.h">
+      <Filter>Archivos de encabezado</Filter>
+    </ClInclude>
+    <ClInclude Include="loader_config.h"><Filter>Archivos de encabezado</Filter></ClInclude>
+    <ClInclude Include="loader_features.h"><Filter>Archivos de encabezado</Filter></ClInclude>
     <ClInclude Include="logging.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
@@ -59,9 +79,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="asset_hook.cpp">
-      <Filter>Archivos de origen</Filter>
-    </ClCompile>
     <ClCompile Include="bootstrap.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
@@ -74,6 +91,21 @@
     <ClCompile Include="proxy_dinput8.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
+    <ClCompile Include="package_identity_catalog.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+    <ClCompile Include="package_dds_contract.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+    <ClCompile Include="resource_identity.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+    <ClCompile Include="resolver_probe.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+    <ClCompile Include="resolver_probe_filter.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
     <ClCompile Include="byte_storage.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
@@ -83,6 +115,10 @@
     <ClCompile Include="game_build.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
+    <ClCompile Include="general_dds_candidate.cpp">
+      <Filter>Archivos de origen</Filter>
+    </ClCompile>
+    <ClCompile Include="loader_config.cpp"><Filter>Archivos de origen</Filter></ClCompile>
     <ClCompile Include="logging.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
