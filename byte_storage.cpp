@@ -23,6 +23,15 @@ struct ByteStorageAccess final {
     }
 };
 
+ByteLoadResult MakeByteStorage(std::vector<std::byte> bytes) {
+    ByteLoadResult result;
+    if (bytes.empty()) { result.error = ByteLoadError::empty_file; return result; }
+    const auto hash = ComputeSha256(bytes);
+    if (!hash) { result.error = ByteLoadError::hash_failed; return result; }
+    result.storage = ByteStorageAccess::Create(std::move(bytes), hash.digest);
+    return result;
+}
+
 namespace {
 
 class FileHandle final {

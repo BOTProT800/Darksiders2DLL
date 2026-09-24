@@ -32,6 +32,7 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
   <PropertyGroup>
     <TargetName>offline_tests</TargetName>
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
@@ -71,10 +72,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <MASM Include="tests\resource_read_frame.asm" />
     <ClCompile Include="tests\general_resolver_runtime_tests.cpp">
       <PreprocessorDefinitions Condition="'$(TestGeneralResolverWrite)'!='true'">DS2_TEST_OBSERVE_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <!-- Preserve the shared call site used to validate the production detour. -->
-      <Optimization>Disabled</Optimization>
+      <!-- MASM keeps the call site stable while Release tests optimize the real detour. -->
     </ClCompile>
     <ClCompile Include="byte_storage.cpp" />
     <ClCompile Include="dds_validation.cpp" />
@@ -82,8 +83,14 @@
     <ClCompile Include="general_dds_candidate.cpp" />
     <ClCompile Include="logging.cpp" />
     <ClCompile Include="loader_config.cpp" />
+    <ClCompile Include="inventory_script.cpp" />
+    <ClCompile Include="tests\inventory_script_tests.cpp" />
     <ClCompile Include="memory_range.cpp" />
     <ClCompile Include="mod_index.cpp" />
+    <ClCompile Include="native_texture.cpp" />
+    <ClCompile Include="png_texture.cpp" />
+    <ClCompile Include="model_candidate.cpp" />
+    <ClCompile Include="model_validation.cpp" />
     <ClCompile Include="package_identity_catalog.cpp" />
     <ClCompile Include="package_dds_contract.cpp" />
     <ClCompile Include="resource_identity.cpp" />
@@ -91,7 +98,10 @@
     <ClCompile Include="sha256.cpp" />
     <ClCompile Include="signature_scan.cpp" />
     <ClCompile Include="tests\offline_tests.cpp" />
+    <ClCompile Include="tests\model_tests.cpp" />
+    <ClCompile Include="tests\texture_tests.cpp" />
     <ClCompile Include="virtual_path.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
 </Project>

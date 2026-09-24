@@ -842,6 +842,7 @@ bool Fail(
 
     const bool stream_layout = sizes_match &&
         total_uncompressed_size == declared_unpacked_size;
+    bool member_blocks = false;
     if (!stream_layout) {
         bool looks_like_member_blocks = false;
         if (final_values.front() == payload_offset) {
@@ -865,16 +866,18 @@ bool Fail(
                 ERROR_INVALID_DATA,
                 L"requested OBPK member sizes do not match its unpacked size");
         }
-        const auto detail = looks_like_member_blocks
-            ? L"the requested asset uses per-member OBPK blocks not yet mapped by the prototype"
-            : L"the requested asset uses an unknown OBPK payload layout";
-        for (const auto* const path : requested_paths) {
-            AddIssue(
-                result, options,
-                PackageIdentityCatalogIssueCode::unsupported_layout,
-                path->display, detail);
+        if (looks_like_member_blocks && options.allow_member_blocks) {
+            member_blocks = true;
+        } else {
+            const auto detail = looks_like_member_blocks
+                ? L"the requested asset uses per-member OBPK blocks; this catalog did not opt in"
+                : L"the requested asset uses an unknown OBPK payload layout";
+            for (const auto* const path : requested_paths) {
+                AddIssue(result, options, PackageIdentityCatalogIssueCode::unsupported_layout,
+                         path->display, detail);
+            }
+            return true;
         }
-        return true;
     }
 
     if (static_cast<std::uint64_t>(payload_offset) + sizeof(std::uint32_t) >=
@@ -929,9 +932,12 @@ bool Fail(
                             static_cast<std::uint32_t>(index + 1)},
                         *normalized.path,
                         segment.size,
-                        uncompressed_offset,
+                        member_blocks ? 0 : uncompressed_offset,
                         member_size,
-                        type_ids[index]});
+                        type_ids[index],
+                        member_blocks ? final_values[index] : 0,
+                        member_blocks ? (index + 1 < final_values.size()
+                            ? final_values[index + 1] : segment.size) : 0});
                 }
             }
         }
@@ -946,7 +952,7 @@ bool Fail(
         }
         uncompressed_offset = next_offset;
     }
-    if (uncompressed_offset != declared_unpacked_size) {
+    if (!member_blocks && uncompressed_offset != declared_unpacked_size) {
         return Fail(
             result, PackageIdentityCatalogError::invalid_package,
             ERROR_INVALID_DATA,

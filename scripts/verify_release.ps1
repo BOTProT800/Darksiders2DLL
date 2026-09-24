@@ -3,12 +3,19 @@
 param(
     [string]$MSBuild = 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe',
     [string]$GameDirectory = '',
-    [string]$AssetSource = ''
+    [string]$AssetSource = '',
+    [string]$ModelModsDirectory = '',
+    [string]$InventoryModsDirectory = '',
+    [ValidatePattern('^[A-Za-z0-9.-]+$')]
+    [string]$EvidenceName = 'validation-release-0.4'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$evidence = Join-Path $root 'build\validation-release-0.4'
+$evidence = Join-Path (Join-Path $root 'build') $EvidenceName
+$versionMatch = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'bootstrap.cpp') -Raw),
+    'SESSION_START", L"version=([A-Za-z0-9.-]+) ')
+if (!$versionMatch.Success) { throw 'No se pudo identificar la version del binario.' }
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $checks = [System.Collections.Generic.List[string]]::new()
 function Build([string]$Name, [string]$Project, [string]$Configuration, [string[]]$Properties = @()) {
@@ -34,6 +41,7 @@ function Run([string]$Name, [string]$Exe, [string[]]$Arguments = @()) {
 function Installation-State {
     if (!$GameDirectory) { return $null }
     return @{ proxy=(Get-FileHash -LiteralPath (Join-Path $GameDirectory 'dinput8.dll')).Hash;
+        scripts=(Get-FileHash -LiteralPath (Join-Path $GameDirectory 'media\scripts.obsp')).Hash;
         upaks=@(Get-ChildItem -LiteralPath (Join-Path $GameDirectory 'media') -Filter '*.upak' -File |
             Sort-Object Name | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) }
 }
@@ -47,6 +55,14 @@ if ($AssetSource) {
 foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release','true'), @('tests-observe','Release','false'))) {
     $dir = Build $test[0] 'Darksiders2DLL.Tests.vcxproj' $test[1] @("/p:TestGeneralResolverWrite=$($test[2])")
     Run $test[0] (Join-Path $dir 'offline_tests.exe') $arguments
+    if ($ModelModsDirectory) {
+        if (!$GameDirectory) { throw 'ModelModsDirectory requiere GameDirectory.' }
+        Run "$($test[0])-models" (Join-Path $dir 'offline_tests.exe') @('--model-catalog', $GameDirectory, $ModelModsDirectory)
+    }
+    if ($InventoryModsDirectory) {
+        if (!$GameDirectory) { throw 'InventoryModsDirectory requiere GameDirectory.' }
+        Run "$($test[0])-inventory" (Join-Path $dir 'offline_tests.exe') @('--inventory-check', $GameDirectory, $InventoryModsDirectory)
+    }
 }
 $a = Build 'release-a' 'Darksiders2DLL.vcxproj' 'Release'
 $b = Build 'release-b' 'Darksiders2DLL.vcxproj' 'Release'
@@ -71,17 +87,19 @@ foreach ($forbidden in @('first_test_mod','ui_hudicon_passiveability_improved_ag
 if (!$text.Contains('GENERAL_DDS_OVERRIDE_HIT')) { throw 'Falta el cargador general.' }
 $checks.Add('release:PE-hardening-and-no-special-case')
 $sources = @(Get-ChildItem -LiteralPath $root -File | Where-Object Extension -In @('.cpp','.h','.vcxproj','.def','.json'))
-$sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -File | Where-Object Extension -In @('.cpp','.h'))
+$sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -File | Where-Object Extension -In @('.cpp','.h','.asm'))
 $sourceHashes = @($sources | Sort-Object FullName | ForEach-Object {
     @{path=$_.FullName.Substring($root.Length+1).Replace('\','/'); sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}
 })
 if ($before) {
     $after = Installation-State
     $after | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'installation-after.json')
-    if ($before.proxy -ne $after.proxy -or (Compare-Object $before.upaks $after.upaks)) { throw 'La instalacion cambio durante las pruebas.' }
+    if ($before.proxy -ne $after.proxy -or $before.scripts -ne $after.scripts -or
+        (Compare-Object $before.upaks $after.upaks)) { throw 'La instalacion cambio durante las pruebas.' }
     $checks.Add('game:proxy-and-upak-metadata-unchanged')
+    $checks.Add('game:scripts-sha256-unchanged')
 }
-$result = @{status='PASS'; version='0.4.0'; utc=[DateTime]::UtcNow.ToString('o'); dllSha256=$hash;
+$result = @{status='PASS'; version=$versionMatch.Groups[1].Value; utc=[DateTime]::UtcNow.ToString('o'); dllSha256=$hash;
     reproducible=$true; dllCharacteristics=('0x{0:X4}' -f $characteristics); checks=@($checks.ToArray());
     sources=$sourceHashes; inGameValidated=$false }
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'VALIDACION.json') -Encoding UTF8

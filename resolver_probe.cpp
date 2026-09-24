@@ -3,6 +3,7 @@
 #include "resolver_probe.h"
 
 #include "memory_range.h"
+#include "native_texture.h"
 #include "signature_scan.h"
 
 #include <MinHook.h>
@@ -21,6 +22,7 @@
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
+#pragma intrinsic(_AddressOfReturnAddress)
 #endif
 
 namespace ds2::modding {
@@ -105,6 +107,10 @@ FILE_ID_INFO g_target_file_id{};
 std::atomic<bool> g_writer_enabled{};
 std::atomic<bool> g_writer_faulted{};
 std::atomic_flag g_writer_busy = ATOMIC_FLAG_INIT;
+std::shared_ptr<const ModelCandidateSnapshot> g_model_candidates_owner;
+std::atomic<const ModelCandidateSnapshot*> g_model_candidates{};
+std::atomic<bool> g_model_write_enabled{};
+std::atomic<std::uint64_t> g_model_reads{}, g_model_matches{}, g_model_write_attempts{}, g_model_writes{}, g_model_failures{};
 #if defined(DS2_GENERAL_DDS_ENABLED)
 std::shared_ptr<const GeneralDdsCandidateSnapshot> g_general_candidates_owner;
 std::atomic<const GeneralDdsCandidateSnapshot*> g_general_candidates{};
@@ -122,6 +128,7 @@ std::atomic<std::uint64_t> g_replacement_write_failures{};
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
 std::atomic<std::uint64_t> g_resource_identity_scopes{};
 std::atomic<std::uint64_t> g_resource_identity_samples{};
+std::atomic<std::uint64_t> g_resource_identity_invalid_members{};
 std::atomic<std::uint64_t> g_resource_identity_overflows{};
 std::atomic<std::uint64_t> g_resource_identity_context_resets{};
 
@@ -456,8 +463,37 @@ __declspec(noinline) std::int32_t HookResourceIdentity(
     return result;
 }
 
+// At game+0x9FF0CD, the caller's [rsp+0x30] holds the zero-based FILE
+// index (incremented at 0x9FF140, including skipped files). The inner loop's
+// reads are not files: it can skip null buffers and process several buffers
+// for one file. RCX is exactly caller rsp+0x70. These offsets are specific
+// to the executable SHA-256 checked before hook installation.
+[[nodiscard]] std::uint32_t CaptureResourceMemberOrdinal(
+    const std::uintptr_t caller_rva,
+    const std::uintptr_t return_address_slot,
+    const std::uintptr_t stream) noexcept {
+    constexpr std::uintptr_t kMemberFromReturnSlot = 0x38;
+    constexpr std::uintptr_t kStreamFromReturnSlot = 0x78;
+    constexpr auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (caller_rva != kExpectedResourceReadReturnRva ||
+        return_address_slot == 0 ||
+        return_address_slot > maximum - kStreamFromReturnSlot ||
+        stream != return_address_slot + kStreamFromReturnSlot) {
+        return 0;
+    }
+    std::uint64_t member_index = 0;
+    if (!CopyProcessMemory(
+            reinterpret_cast<const void*>(return_address_slot + kMemberFromReturnSlot),
+            &member_index, sizeof(member_index)) ||
+        member_index >= kResourceIdentityMaxMembersPerScope) {
+        return 0;
+    }
+    return static_cast<std::uint32_t>(member_index) + 1;
+}
+
 [[nodiscard]] bool ObserveResourceIdentityRead(
     const std::uintptr_t caller_rva,
+    const std::uintptr_t return_address_slot,
     void* const stream,
     void* const destination,
     const std::int32_t requested,
@@ -473,11 +509,16 @@ __declspec(noinline) std::int32_t HookResourceIdentity(
     read.caller_rva = caller_rva;
     read.requested = requested;
     read.returned = returned;
+    read.member_ordinal = CaptureResourceMemberOrdinal(
+        caller_rva, return_address_slot, read.stream);
     const auto status = g_resource_identity_context.ObserveRead(read, sample);
     if (status != ResourceIdentityObserveStatus::recorded) {
         return false;
     }
     g_resource_identity_samples.fetch_add(1, std::memory_order_relaxed);
+    if (read.member_ordinal == 0) {
+        g_resource_identity_invalid_members.fetch_add(1, std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -523,13 +564,12 @@ struct GeneralDdsWriteResult final {
     DWORD win32_error{};
 };
 
-[[nodiscard]] GeneralDdsWriteResult TryApplyGeneralDdsReplacement(
-    const GeneralDdsDryRunEvaluation& evaluation,
+[[nodiscard]] GeneralDdsWriteResult TryApplyReplacementBytes(
+    const std::span<const std::byte> replacement,
+    const Sha256Digest& expected,
     void* const destination,
     const std::int32_t requested) noexcept {
     GeneralDdsWriteResult result;
-    const std::span<const std::byte> replacement =
-        GeneralDdsReplacementBytes(evaluation);
     if (destination == nullptr || requested <= 0 || replacement.empty() ||
         replacement.size() != static_cast<std::size_t>(requested) ||
         replacement.size() >
@@ -557,10 +597,6 @@ struct GeneralDdsWriteResult final {
         result.win32_error = ERROR_READ_FAULT;
         return result;
     }
-    const Sha256Digest& expected =
-        evaluation.decision == GeneralDdsDryRunDecision::full_dds
-            ? evaluation.candidate->replacement_full_sha256
-            : evaluation.candidate->replacement_payload_sha256;
     if (observed != expected) {
         result.win32_error = ERROR_CRC;
         return result;
@@ -568,7 +604,93 @@ struct GeneralDdsWriteResult final {
     result.verified = true;
     return result;
 }
+
+[[nodiscard]] GeneralDdsWriteResult TryApplyGeneralDdsReplacement(
+    const GeneralDdsDryRunEvaluation& evaluation, void* destination,
+    const std::int32_t requested) noexcept {
+    if (!evaluation.candidate) return {};
+    const auto& expected = evaluation.decision == GeneralDdsDryRunDecision::full_dds
+        ? evaluation.candidate->replacement_full_sha256
+        : evaluation.candidate->replacement_payload_sha256;
+    return TryApplyReplacementBytes(GeneralDdsReplacementBytes(evaluation), expected,
+                                    destination, requested);
+}
 #endif
+
+void ObserveModelRead(const ResourceIdentitySample& sample, void* destination,
+                      const std::int32_t requested, const std::int32_t returned,
+                      const DWORD result_error) noexcept {
+    if (!IsResourceIdentitySampleUsable(sample, kExpectedResourceIdentityOuterReturnRva,
+                                        kExpectedResourceReadReturnRva)) return;
+    const auto* snapshot = g_model_candidates.load(std::memory_order_acquire);
+    if (!snapshot) return;
+    const PackageResourceIdentity identity{sample.scope.package_base,
+        static_cast<std::uint32_t>(sample.scope.member_table_offset), sample.read.member_ordinal};
+    const auto* candidate = snapshot->Find(identity);
+    if (!candidate) return;
+    g_model_reads.fetch_add(1, std::memory_order_relaxed);
+    Sha256Digest source{};
+    const ModelRange* range = nullptr;
+    bool hash_valid = false;
+    const bool recognized_size = requested > 0 && std::any_of(
+        candidate->ranges.begin(), candidate->ranges.end(),
+        [requested](const ModelRange& r) { return r.size == static_cast<std::uint32_t>(requested); });
+    if (recognized_size && requested == returned && destination &&
+        IsWritableMemoryRange(destination, static_cast<std::size_t>(requested))) {
+        hash_valid = TryHashProcessMemory(destination, static_cast<std::size_t>(requested), source);
+        if (hash_valid) range = MatchModelRange(*candidate, static_cast<std::uint32_t>(requested), source);
+    }
+    if (range) g_model_matches.fetch_add(1, std::memory_order_relaxed);
+    const bool changed = range && range->original_hash != range->replacement_hash;
+    bool attempted = false, written = false, verified = false;
+    DWORD error = ERROR_SUCCESS;
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    if (changed && g_model_write_enabled.load(std::memory_order_acquire) &&
+        g_writer_enabled.load(std::memory_order_acquire) &&
+        !g_writer_faulted.load(std::memory_order_acquire) &&
+        !g_writer_busy.test_and_set(std::memory_order_acquire)) {
+        struct ReleaseGate { ~ReleaseGate() { g_writer_busy.clear(std::memory_order_release); } } gate;
+        Sha256Digest current{};
+        const auto bytes = candidate->storage ? candidate->storage->Bytes() : std::span<const std::byte>{};
+        if (range->offset <= bytes.size() && range->size <= bytes.size() - range->offset &&
+            TryHashProcessMemory(destination, range->size, current) && current == range->original_hash &&
+            !g_writer_faulted.load(std::memory_order_acquire)) {
+            attempted = true;
+            g_model_write_attempts.fetch_add(1, std::memory_order_relaxed);
+            const auto result = TryApplyReplacementBytes(bytes.subspan(range->offset, range->size),
+                range->replacement_hash, destination, requested);
+            written = result.written;
+            verified = result.verified;
+            error = result.win32_error;
+            if (verified) g_model_writes.fetch_add(1, std::memory_order_relaxed);
+            else {
+                g_model_failures.fetch_add(1, std::memory_order_relaxed);
+                g_writer_faulted.store(true, std::memory_order_release);
+            }
+        }
+    }
+#endif
+    auto* slot = ClaimEventSlot();
+    if (!slot) return;
+    ResolverProbeEvent event{};
+    event.kind = ResolverProbeEventKind::model_read;
+    event.resource_identity = sample;
+    event.resource_identity.read.hash_valid = hash_valid;
+    event.resource_identity.read.sha256 = source;
+    event.requested = requested;
+    event.returned = returned;
+    event.win32_error = result_error;
+    event.model_range_matched = range != nullptr;
+    event.model_range_changed = changed;
+    event.model_offset = range ? range->offset : 0;
+    event.model_write_attempted = attempted;
+    event.replacement_applied = written;
+    event.model_write_verified = verified;
+    event.model_write_error = error;
+    CaptureEventContext(event);
+    slot->event = event;
+    PublishEventSlot(*slot, ResolverProbeEventKind::model_read);
+}
 
 void ObserveGeneralDdsDryRun(
     const ResourceIdentitySample& sample,
@@ -586,7 +708,7 @@ void ObserveGeneralDdsDryRun(
     const PackageResourceIdentity identity{
         sample.scope.package_base,
         static_cast<std::uint32_t>(sample.scope.member_table_offset),
-        sample.read_ordinal,
+        sample.read.member_ordinal,
     };
     const GeneralDdsCandidateSnapshot* const candidates =
         g_general_candidates.load(std::memory_order_acquire);
@@ -782,7 +904,7 @@ BOOL WINAPI HookCloseHandle(const HANDLE object) noexcept {
     return result;
 }
 
-std::int32_t HookStreamRead(
+__declspec(noinline) std::int32_t HookStreamRead(
     void* const stream,
     void* const destination,
     const std::int32_t byte_count) {
@@ -794,12 +916,15 @@ std::int32_t HookStreamRead(
 
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
     const std::uintptr_t caller_rva = GameRva(_ReturnAddress());
+    const auto return_address_slot =
+        reinterpret_cast<std::uintptr_t>(_AddressOfReturnAddress());
 #endif
     if (!g_reported_stream_first_entry.load(std::memory_order_acquire)) {
         const DWORD entry_error = GetLastError();
         NotifyStreamFirstEntryOnce();
         SetLastError(entry_error);
     }
+    ForgetNativeTextureRead(destination, byte_count);
     const std::int32_t result = original(stream, destination, byte_count);
 #if defined(DS2_GENERAL_DDS_ENABLED)
     const DWORD result_error = GetLastError();
@@ -808,6 +933,7 @@ std::int32_t HookStreamRead(
     ResourceIdentitySample identity_sample;
     const bool identity_correlated = ObserveResourceIdentityRead(
         caller_rva,
+        return_address_slot,
         stream,
         destination,
         byte_count,
@@ -815,6 +941,8 @@ std::int32_t HookStreamRead(
         identity_sample);
 #if defined(DS2_GENERAL_DDS_ENABLED)
     if (identity_correlated) {
+        ObserveNativeTextureRead(identity_sample, destination, byte_count, result);
+        ObserveModelRead(identity_sample, destination, byte_count, result, result_error);
         ObserveGeneralDdsDryRun(
             identity_sample,
             destination,
@@ -890,7 +1018,9 @@ bool InitializeResolverProbe(
     const HMODULE game_module,
     const std::filesystem::path& media_upak_path,
     std::shared_ptr<const GeneralDdsCandidateSnapshot> general_candidates,
-    const bool write_enabled) noexcept {
+    const bool write_enabled,
+    std::shared_ptr<const ModelCandidateSnapshot> model_candidates,
+    const bool model_write_enabled) noexcept {
     std::scoped_lock lock(g_lifecycle_mutex);
     const ResolverProbeState current = g_state.load(std::memory_order_acquire);
     if (current == ResolverProbeState::active) {
@@ -906,12 +1036,16 @@ bool InitializeResolverProbe(
         g_state.store(ResolverProbeState::signature_mismatch, std::memory_order_release);
         return false;
     }
-    if (!general_candidates || general_candidates->Entries().empty()) {
+    if ((!general_candidates || general_candidates->Entries().empty()) &&
+        (!model_candidates || model_candidates->entries.empty())) {
         g_state.store(ResolverProbeState::invalid_replacement, std::memory_order_release);
         return false;
     }
     g_general_candidates_owner = std::move(general_candidates);
     g_general_candidates.store(g_general_candidates_owner.get(), std::memory_order_release);
+    g_model_candidates_owner = std::move(model_candidates);
+    g_model_candidates.store(g_model_candidates_owner.get(), std::memory_order_release);
+    g_model_write_enabled.store(model_write_enabled, std::memory_order_release);
     // Publish ownership before activation, but permission only after ALL hooks succeed.
     g_writer_enabled.store(false, std::memory_order_release);
 
@@ -1232,6 +1366,11 @@ ResolverProbeStatus GetResolverProbeStatus() noexcept {
 
 ResolverProbeStats GetResolverProbeStats() noexcept {
     ResolverProbeStats stats;
+    stats.model_reads = g_model_reads.load(std::memory_order_relaxed);
+    stats.model_matches = g_model_matches.load(std::memory_order_relaxed);
+    stats.model_write_attempts = g_model_write_attempts.load(std::memory_order_relaxed);
+    stats.model_writes = g_model_writes.load(std::memory_order_relaxed);
+    stats.model_failures = g_model_failures.load(std::memory_order_relaxed);
     stats.read_file_calls = g_read_file_calls.load(std::memory_order_relaxed);
     stats.package_segment_reads =
         g_package_segment_reads.load(std::memory_order_relaxed);
@@ -1252,6 +1391,8 @@ ResolverProbeStats GetResolverProbeStats() noexcept {
         g_resource_identity_scopes.load(std::memory_order_relaxed);
     stats.resource_identity_samples =
         g_resource_identity_samples.load(std::memory_order_relaxed);
+    stats.resource_identity_invalid_members =
+        g_resource_identity_invalid_members.load(std::memory_order_relaxed);
     stats.resource_identity_overflows =
         g_resource_identity_overflows.load(std::memory_order_relaxed);
     stats.resource_identity_context_resets =

@@ -9,6 +9,7 @@ namespace ds2::modding {
 
 inline constexpr std::size_t kResourceIdentityMaxDepth = 8;
 inline constexpr std::uint32_t kResourceIdentityMaxReadsPerScope = 65'536;
+inline constexpr std::uint32_t kResourceIdentityMaxMembersPerScope = 2'000'000;
 
 // Values passed into the correlator must already have been copied and
 // validated by the hook. The correlator never dereferences game pointers.
@@ -34,6 +35,10 @@ struct ResourceIdentityReadInput final {
     std::uintptr_t caller_rva{};
     std::int32_t requested{};
     std::int32_t returned{};
+    // One-based file index recovered from the supported game's caller frame.
+    // Zero means unavailable. A read count is never a resource identity:
+    // the game can skip files or issue multiple reads for one file.
+    std::uint32_t member_ordinal{};
     bool hash_valid{};
     std::array<std::uint8_t, 32> sha256{};
 };
@@ -69,11 +74,12 @@ enum class ResourceIdentityEndStatus {
     context_reset,
 };
 
-// POD emitted by the optional Debug diagnostic hook. It identifies the innermost
+// POD emitted by the diagnostic hook. It identifies the innermost
 // resource scope and numbers only non-null reads already filtered by the hook
 // to the supported static call site. The package-side object and the inner
 // stack-local stream wrapper are intentionally distinct. Rejected reads never
-// consume an ordinal.
+// consume a read ordinal. read_ordinal is telemetry only; use read.member_ordinal
+// for package lookups.
 struct ResourceIdentitySample final {
     std::uint64_t sequence{};
     std::uint32_t nesting_depth{};

@@ -75,6 +75,9 @@ struct ByteLoadResult final {
     const std::filesystem::path& path,
     std::uint64_t max_file_size = 128ull * 1024ull * 1024ull);
 
+// Takes ownership of generated, bounded asset bytes and computes their hash.
+[[nodiscard]] ByteLoadResult MakeByteStorage(std::vector<std::byte> bytes);
+
 // Opens both root and path and compares the normalized final names obtained
 // from their handles before reading. This closes the gap between a lexical
 // containment check and opening the asset: an intermediate directory that is

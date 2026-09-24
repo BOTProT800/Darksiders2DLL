@@ -1,3 +1,17 @@
+> Preparación de modelos (2026-09-15): [MODEL_TRIAL.md](MODEL_TRIAL.md) documenta
+> el contrato `.2`, los bloques independientes de armas y la validación pendiente
+> en el juego. Las capacidades limitadas que se describen abajo son históricas.
+>
+> Corrección de la hipótesis de identidad: la sesión de la máscara demostró que
+> `read_ordinal` no identifica de forma general un miembro. El juego puede omitir
+> archivos y efectuar varias lecturas por miembro. Los resultados anteriores de
+> dos iconos siguen siendo históricos, pero no justifican esa equivalencia.
+> La corrección y el índice explícito se documentan en
+> [MASK_MEMBER_IDENTITY_FIX.md](MASK_MEMBER_IDENTITY_FIX.md).
+> La sesión `20260915-051305-29488` ya confirmó esa corrección: lectura 474,
+> miembro 223, payload de la máscara copiado y verificado, cero fallos y
+> confirmación visual del usuario.
+>
 > Actualización 0.4.0 (2026-09-14): se retiró la dependencia del caso especial y
 > el escritor exacto. Debug y Release usan el motor general validado por contrato
 > y hash, con configuración INI, permiso de activación y bloqueo tras fallos.

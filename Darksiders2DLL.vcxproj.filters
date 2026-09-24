@@ -58,6 +58,8 @@
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
     <ClInclude Include="loader_config.h"><Filter>Archivos de encabezado</Filter></ClInclude>
+    <ClInclude Include="inventory_script.h"><Filter>Archivos de encabezado</Filter></ClInclude>
+    <ClInclude Include="inventory_script_hook.h"><Filter>Archivos de encabezado</Filter></ClInclude>
     <ClInclude Include="loader_features.h"><Filter>Archivos de encabezado</Filter></ClInclude>
     <ClInclude Include="logging.h">
       <Filter>Archivos de encabezado</Filter>
@@ -82,6 +84,8 @@
     <ClCompile Include="bootstrap.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>
+    <ClCompile Include="inventory_script.cpp"><Filter>Archivos de origen</Filter></ClCompile>
+    <ClCompile Include="inventory_script_hook.cpp"><Filter>Archivos de origen</Filter></ClCompile>
     <ClCompile Include="dllmain.cpp">
       <Filter>Archivos de origen</Filter>
     </ClCompile>

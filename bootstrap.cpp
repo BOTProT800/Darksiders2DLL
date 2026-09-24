@@ -7,6 +7,8 @@
 #include "game_build.h"
 #include "logging.h"
 #include "mod_index.h"
+#include "native_texture.h"
+#include "inventory_script_hook.h"
 #if defined(DS2_GENERAL_DDS_ENABLED)
 #include "general_dds_candidate.h"
 #include "package_dds_contract.h"
@@ -16,6 +18,7 @@
 #include "sha256.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -38,6 +41,7 @@ namespace
         ds2::bootstrap::Status::not_started;
     std::atomic<std::shared_ptr<ds2::modding::SessionLogger>> g_logger;
     std::atomic<std::shared_ptr<const ds2::modding::ModIndexSnapshot>> g_mod_index;
+    std::atomic<std::shared_ptr<const ds2::modding::ModelCandidateSnapshot>> g_model_candidates;
 #if defined(DS2_GENERAL_DDS_ENABLED)
     std::atomic<std::shared_ptr<
         const ds2::modding::PackageIdentityCatalogSnapshot>>
@@ -134,6 +138,33 @@ namespace
         detail.append(std::to_wstring(event.thread_id));
 
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
+        if (event.kind == ds2::modding::ResolverProbeEventKind::model_read) {
+            const auto& sample = event.resource_identity;
+            const ds2::modding::PackageResourceIdentity identity{sample.scope.package_base,
+                static_cast<std::uint32_t>(sample.scope.member_table_offset), sample.read.member_ordinal};
+            const auto models = g_model_candidates.load(std::memory_order_acquire);
+            const auto* candidate = models ? models->Find(identity) : nullptr;
+            detail.append(L" member_ordinal=" + std::to_wstring(identity.member_ordinal));
+            detail.append(L" read_ordinal=" + std::to_wstring(sample.read_ordinal));
+            detail.append(L" requested=" + std::to_wstring(event.requested));
+            detail.append(L" returned=" + std::to_wstring(event.returned));
+            detail.append(L" range_matched="); detail.append(BoolName(event.model_range_matched));
+            detail.append(L" changed="); detail.append(BoolName(event.model_range_changed));
+            detail.append(L" offset=" + std::to_wstring(event.model_offset));
+            detail.append(L" replacement_attempted="); detail.append(BoolName(event.model_write_attempted));
+            detail.append(L" replacement_written="); detail.append(BoolName(event.replacement_applied));
+            detail.append(L" replacement_verified="); detail.append(BoolName(event.model_write_verified));
+            detail.append(L" replacement_win32=" + std::to_wstring(event.model_write_error));
+            if (sample.read.hash_valid) detail.append(L" source_sha256=" + ds2::modding::Sha256HexWide(sample.read.sha256));
+            if (candidate) detail.append(L" path=" + candidate->virtual_path.key);
+            AppendResolverStack(detail, event);
+            LogEvent(event.model_write_attempted
+                ? (event.model_write_verified ? L"MODEL_OVERRIDE_HIT" : L"MODEL_OVERRIDE_FAILED")
+                : (event.model_range_matched
+                    ? (event.model_range_changed ? L"MODEL_VERIFIED_WOULD_OVERRIDE" : L"MODEL_UNCHANGED_VERIFIED")
+                    : L"MODEL_READ_UNMATCHED"), detail);
+            return;
+        }
         if (event.kind ==
             ds2::modding::ResolverProbeEventKind::resource_identity_sample)
         {
@@ -144,6 +175,8 @@ namespace
             detail.append(std::to_wstring(sample.nesting_depth));
             detail.append(L" read_ordinal=");
             detail.append(std::to_wstring(sample.read_ordinal));
+            detail.append(L" member_ordinal=");
+            detail.append(std::to_wstring(sample.read.member_ordinal));
             detail.append(L" owner=");
             AppendHex(detail, sample.scope.owner);
             detail.append(L" arg2=");
@@ -191,13 +224,14 @@ namespace
             if (catalog != nullptr && sample.scope.object_fields_valid &&
                 sample.scope.stream_valid &&
                 sample.scope.stream != 0 && sample.read.stream != 0 &&
-                sample.scope.member_table_offset >= 0)
+                sample.scope.member_table_offset >= 0 &&
+                sample.read.member_ordinal != 0)
             {
                 const ds2::modding::PackageResourceIdentity identity{
                     sample.scope.package_base,
                     static_cast<std::uint32_t>(
                         sample.scope.member_table_offset),
-                    sample.read_ordinal};
+                    sample.read.member_ordinal};
                 const auto* const mapped = catalog->Find(identity);
                 if (mapped != nullptr)
                 {
@@ -228,6 +262,8 @@ namespace
             detail.append(std::to_wstring(
                 event.resource_identity.sequence));
             detail.append(L" read_ordinal=");
+            detail.append(std::to_wstring(event.resource_identity.read_ordinal));
+            detail.append(L" member_ordinal=");
             detail.append(std::to_wstring(
                 dry_run.identity.member_ordinal));
             detail.append(L" package_base=");
@@ -344,7 +380,10 @@ namespace
         const ds2::modding::ResolverProbeStats& left,
         const ds2::modding::ResolverProbeStats& right) noexcept
     {
-        return left.read_file_calls == right.read_file_calls &&
+        return left.model_reads == right.model_reads && left.model_matches == right.model_matches &&
+            left.model_write_attempts == right.model_write_attempts && left.model_writes == right.model_writes &&
+            left.model_failures == right.model_failures &&
+            left.read_file_calls == right.read_file_calls &&
             left.package_segment_reads == right.package_segment_reads &&
             left.target_sized_stream_reads == right.target_sized_stream_reads &&
             left.queued_events == right.queued_events &&
@@ -357,6 +396,7 @@ namespace
             &&
             left.resource_identity_scopes == right.resource_identity_scopes &&
             left.resource_identity_samples == right.resource_identity_samples &&
+            left.resource_identity_invalid_members == right.resource_identity_invalid_members &&
             left.resource_identity_overflows == right.resource_identity_overflows &&
             left.resource_identity_context_resets ==
                 right.resource_identity_context_resets
@@ -405,6 +445,8 @@ namespace
         detail.append(std::to_wstring(stats.resource_identity_scopes));
         detail.append(L" resource_identity_samples=");
         detail.append(std::to_wstring(stats.resource_identity_samples));
+        detail.append(L" resource_identity_invalid_members=");
+        detail.append(std::to_wstring(stats.resource_identity_invalid_members));
         detail.append(L" resource_identity_overflows=");
         detail.append(std::to_wstring(stats.resource_identity_overflows));
         detail.append(L" resource_identity_context_resets=");
@@ -431,13 +473,19 @@ namespace
         detail.append(std::to_wstring(
             stats.general_write_verify_failures));
 #endif
+        detail.append(L" model_reads=" + std::to_wstring(stats.model_reads));
+        detail.append(L" model_matches=" + std::to_wstring(stats.model_matches));
+        detail.append(L" model_write_attempts=" + std::to_wstring(stats.model_write_attempts));
+        detail.append(L" model_writes=" + std::to_wstring(stats.model_writes));
+        detail.append(L" model_failures=" + std::to_wstring(stats.model_failures));
         LogEvent(L"RESOLVER_PROBE_STATS", detail);
     }
 
 #if defined(DS2_GENERAL_DDS_ENABLED)
     void InitializeDdsCatalog(
         const std::filesystem::path& game_directory,
-        const ds2::modding::ModIndexSnapshot& mod_index) noexcept
+        const ds2::modding::ModIndexSnapshot& mod_index,
+        const bool native_textures) noexcept
     {
         try
         {
@@ -445,7 +493,7 @@ namespace
             requested.reserve(mod_index.Assets().size());
             for (const auto& asset : mod_index.Assets())
             {
-                requested.push_back(asset.virtual_path);
+                if (asset.dds) requested.push_back(asset.virtual_path);
             }
 
             auto built = ds2::modding::BuildMediaPackageIdentityCatalog(
@@ -587,10 +635,12 @@ namespace
             contract_summary.append(L" source=installed_media_upak read_only=true");
             LogEvent(L"PACKAGE_DDS_CONTRACT_CATALOG_READY", contract_summary);
 
+            ds2::modding::GeneralDdsCandidateOptions candidate_options;
+            candidate_options.allow_native_upload = native_textures;
             auto candidates =
                 ds2::modding::BuildGeneralDdsCandidateSnapshot(
                     built.snapshot.get(), contracts.snapshot.get(),
-                    std::addressof(mod_index));
+                    std::addressof(mod_index), candidate_options);
             if (!candidates)
             {
                 std::wstring detail = L"reason=";
@@ -641,6 +691,7 @@ namespace
                 detail.append(L" member_ordinal=");
                 detail.append(std::to_wstring(
                     candidate.identity.member_ordinal));
+                detail.append(candidate.requires_native_upload ? L" route=native_upload" : L" route=stream_copy");
                 detail.append(L" full_size=");
                 detail.append(std::to_wstring(candidate.original_size));
                 detail.append(L" payload_size=");
@@ -704,6 +755,7 @@ namespace
         }
 
         ds2::modding::ResolverProbeStats last_stats{};
+        ds2::modding::InventoryScriptHookStats last_inventory{};
         for (;;)
         {
             const DWORD wait_result = WaitForSingleObject(
@@ -734,6 +786,17 @@ namespace
                     }
                 }
 
+                ds2::modding::DrainNativeTextureEvents(LogEvent);
+                const auto inventory = ds2::modding::GetInventoryScriptHookStats();
+                if (inventory.matched != last_inventory.matched || inventory.redirected != last_inventory.redirected ||
+                    inventory.observed != last_inventory.observed || inventory.failures != last_inventory.failures) {
+                    LogEvent(L"INVENTORY_SCRIPT_OPENS",
+                        L"matched=" + std::to_wstring(inventory.matched) +
+                        L" redirected=" + std::to_wstring(inventory.redirected) +
+                        L" observed=" + std::to_wstring(inventory.observed) +
+                        L" failures=" + std::to_wstring(inventory.failures));
+                    last_inventory = inventory;
+                }
                 const auto stats = ds2::modding::GetResolverProbeStats();
                 if (!ResolverStatsEqual(stats, last_stats))
                 {
@@ -768,6 +831,7 @@ namespace
 
     [[nodiscard]] bool StartResolverEventLogger() noexcept
     {
+        if (g_resolver_event_handle.load(std::memory_order_acquire) != nullptr) return true;
         const HANDLE event_handle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (event_handle == nullptr)
         {
@@ -830,7 +894,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.4.0 mode=dds_loader");
+            LogEvent(L"SESSION_START", L"version=0.7.0-inventory-trial mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";
@@ -869,6 +933,9 @@ namespace
             LogEvent(L"LOADER_CONFIG", config.config.write_enabled ? L"mode=override" : L"mode=observe");
             ds2::modding::ModIndexOptions index_options;
             index_options.dds_only = true;
+            index_options.include_native_models = config.config.models != ds2::modding::ModelMode::off;
+            index_options.include_png = config.config.native_textures;
+            index_options.include_inventory_scripts = config.config.scripts != ds2::modding::ScriptMode::off;
             index_options.max_asset_file_size = 64ull * 1024 * 1024;
             index_options.max_total_bytes = 256ull * 1024 * 1024;
             auto index_result = ds2::modding::BuildModIndex(game_directory / L"mods", index_options);
@@ -904,12 +971,64 @@ namespace
             }
 
             auto snapshot = std::move(index_result.snapshot);
-            InitializeDdsCatalog(game_directory, *snapshot);
+            // Scripts can be opened before UI assets; install this independent
+            // path before the potentially expensive DDS/model catalogs.
+            bool inventory_active = false;
+            if (config.config.scripts != ds2::modding::ScriptMode::off) {
+                const auto inventory = ds2::modding::BuildInventoryScriptCandidate(game_directory, *snapshot);
+                if (!inventory.error.empty()) LogEvent(L"INVENTORY_SCRIPT_REJECTED", inventory.error);
+                if (!inventory.candidate && inventory.error.empty())
+                    LogEvent(L"INVENTORY_SCRIPT_ABSENT", L"expected mods/<mod>/media/scripts.obsp");
+                if (inventory.candidate) {
+                    std::wstring detail = L"mod=" + inventory.candidate->ModId();
+                    for (std::size_t i = 0; i < ds2::modding::kInventorySlotFields.size(); ++i) {
+                        detail.append(L" " + std::wstring(ds2::modding::kInventorySlotFields[i].name) +
+                                      L"=" + std::to_wstring(inventory.candidate->Slots()[i]));
+                    }
+                    LogEvent(L"INVENTORY_SCRIPT_CANDIDATE", detail);
+                    const bool write_scripts = config.config.write_enabled &&
+                        config.config.scripts == ds2::modding::ScriptMode::inventory;
+                    if (StartResolverEventLogger())
+                        inventory_active = ds2::modding::InitializeInventoryScriptHook(inventory.candidate, write_scripts);
+                    LogEvent(inventory_active ? L"INVENTORY_SCRIPT_HOOK_ACTIVE" : L"INVENTORY_SCRIPT_HOOK_FAILED",
+                        std::wstring(write_scripts ? L"mode=inventory" : L"mode=observe") +
+                        L" minhook_status=" + std::to_wstring(ds2::modding::GetInventoryScriptHookStats().minhook_status));
+                }
+            }
+            InitializeDdsCatalog(game_directory, *snapshot, config.config.native_textures);
+            if (config.config.models != ds2::modding::ModelMode::off) {
+                const auto contract = config.config.models == ds2::modding::ModelMode::override_positions
+                    ? ds2::modding::ModelEditContract::positions_only
+                    : ds2::modding::ModelEditContract::bounded_shape;
+                const auto models = ds2::modding::BuildModelCandidates(game_directory, *snapshot, contract);
+                for (const auto& issue : models.issues) LogEvent(L"MODEL_REJECTED", issue);
+                if (!models.error.empty()) LogEvent(L"MODEL_CATALOG_FAILED", models.error);
+                if (models.snapshot) {
+                    for (const auto& candidate : models.snapshot->entries) {
+                        std::wstring detail = L"path=" + candidate.virtual_path.key;
+                        detail.append(L" member_ordinal=" + std::to_wstring(candidate.identity.member_ordinal));
+                        detail.append(L" package_base="); AppendHex(detail, candidate.identity.package_base);
+                        detail.append(L" member_table_offset="); AppendHex(detail, candidate.identity.member_table_offset);
+                        detail.append(L" bytes=" + std::to_wstring(candidate.storage->Size()));
+                        detail.append(L" ranges=" + std::to_wstring(candidate.ranges.size()));
+                        LogEvent(L"MODEL_CANDIDATE", detail);
+                    }
+                    LogEvent(L"MODEL_CATALOG_READY", L"candidates=" + std::to_wstring(models.snapshot->entries.size()));
+                    g_model_candidates.store(models.snapshot, std::memory_order_release);
+                }
+                LogEvent(L"MODEL_MODE", config.config.models == ds2::modding::ModelMode::override_positions
+                    ? L"override_positions (experimental)"
+                    : config.config.models == ds2::modding::ModelMode::override_shape
+                    ? L"override_shape (bounded shape, experimental)" : L"observe (bounded shape, no model writes)");
+            }
             g_mod_index.store(snapshot, std::memory_order_release);
             const auto candidates = g_general_dds_candidates.load(std::memory_order_acquire);
-            if (!candidates || candidates->Entries().empty()) {
-                LogEvent(L"ASSET_FALLBACK", L"no compatible DDS candidates");
-                g_bootstrapStatus.store(ds2::bootstrap::Status::ready_proxy_only,
+            const auto model_candidates = g_model_candidates.load(std::memory_order_acquire);
+            if ((!candidates || candidates->Entries().empty()) &&
+                (!model_candidates || model_candidates->entries.empty())) {
+                LogEvent(L"ASSET_FALLBACK", L"no compatible DDS/model candidates");
+                g_bootstrapStatus.store(inventory_active ? ds2::bootstrap::Status::ready_internal_override
+                                                        : ds2::bootstrap::Status::ready_proxy_only,
                                         std::memory_order_release);
                 return;
             }
@@ -921,11 +1040,21 @@ namespace
             }
             else
             {
+                const bool has_native = candidates && std::any_of(candidates->Entries().begin(),
+                    candidates->Entries().end(), [](const auto& c) { return c.requires_native_upload; });
+                if (has_native) {
+                    const bool active = ds2::modding::InitializeNativeTextureHook(game_module, candidates);
+                    LogEvent(active ? L"NATIVE_TEXTURE_HOOK_ACTIVE" : L"NATIVE_TEXTURE_HOOK_FAILED",
+                        L"rva=0xD4E62C experimental=true");
+                }
                 ds2::modding::SetResolverProbeEventCallback(OnResolverProbeEvent);
                 resolver_probe_active = ds2::modding::InitializeResolverProbe(
                     game_module,
                     game_directory / L"media" / L"media.upak",
-                    candidates, config.config.write_enabled);
+                    candidates, config.config.write_enabled, model_candidates,
+                    config.config.models == ds2::modding::ModelMode::override_positions ||
+                    config.config.models == ds2::modding::ModelMode::override_shape);
+                ds2::modding::EnableNativeTextureWrites(resolver_probe_active && config.config.write_enabled);
                 const auto probe_status = ds2::modding::GetResolverProbeStatus();
                 std::wstring probe_detail = L"read_file=";
                 probe_detail.append(BoolName(probe_status.read_file_hook_installed));
@@ -958,7 +1087,7 @@ namespace
             }
 
             g_bootstrapStatus.store(
-                resolver_probe_active ? ds2::bootstrap::Status::ready_internal_override
+                (resolver_probe_active || inventory_active) ? ds2::bootstrap::Status::ready_internal_override
                                       : ds2::bootstrap::Status::ready_proxy_only,
                 std::memory_order_release);
 
@@ -968,15 +1097,13 @@ namespace
             const bool resolver_probe_active =
                 ds2::modding::GetResolverProbeStatus().state ==
                 ds2::modding::ResolverProbeState::active;
-            if (resolver_probe_active)
+            if (resolver_probe_active || ds2::modding::GetInventoryScriptHookStats().active)
             {
                 LogEvent(
                     L"INITIALIZATION_WARNING",
                     L"unhandled C++ exception after hook activation");
                 g_bootstrapStatus.store(
-                    resolver_probe_active
-                        ? ds2::bootstrap::Status::ready_internal_override
-                        : ds2::bootstrap::Status::ready_texture_override,
+                    ds2::bootstrap::Status::ready_internal_override,
                     std::memory_order_release);
                 OutputDebugStringW(
                     L"[Darksiders2DLL] INITIALIZATION_WARNING_AFTER_TEXTURE_HOOK_ACTIVE\n");

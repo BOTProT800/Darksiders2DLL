@@ -12,12 +12,12 @@ std::string_view Trim(std::string_view text) {
 }
 LoaderConfigResult ParseLoaderConfig(std::string_view text) {
     LoaderConfigResult result;
-    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe";
+    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape, scripts=off|observe|inventory";
     if (text.empty() || text.size() > 16 * 1024) return result;
     for (const unsigned char c : text) {
         if ((c < 32 && c != '\t' && c != '\r' && c != '\n') || c > 126) return result;
     }
-    bool section = false, enabled = false, mode = false;
+    bool section = false, enabled = false, mode = false, models = false, textures = false, scripts = false;
     while (!text.empty()) {
         const auto end = text.find('\n');
         auto line = Trim(text.substr(0, end));
@@ -41,6 +41,23 @@ LoaderConfigResult ParseLoaderConfig(std::string_view text) {
             if (value != "override" && value != "observe") return result;
             result.config.write_enabled = value == "override";
             mode = true;
+        } else if (key == "textures" && !textures) {
+            if (value != "native" && value != "exact") return result;
+            result.config.native_textures = value == "native";
+            textures = true;
+        } else if (key == "models" && !models) {
+            if (value == "off") result.config.models = ModelMode::off;
+            else if (value == "observe") result.config.models = ModelMode::observe;
+            else if (value == "override_positions") result.config.models = ModelMode::override_positions;
+            else if (value == "override_shape") result.config.models = ModelMode::override_shape;
+            else return result;
+            models = true;
+        } else if (key == "scripts" && !scripts) {
+            if (value == "off") result.config.scripts = ScriptMode::off;
+            else if (value == "observe") result.config.scripts = ScriptMode::observe;
+            else if (value == "inventory") result.config.scripts = ScriptMode::inventory;
+            else return result;
+            scripts = true;
         } else return result;
     }
     if (!section) return result;

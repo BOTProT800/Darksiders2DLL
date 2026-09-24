@@ -1,4 +1,5 @@
 #include "general_dds_candidate.h"
+#include "native_texture.h"
 
 #include <algorithm>
 #include <limits>
@@ -151,7 +152,7 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
 
             const auto storage_size = static_cast<std::uint64_t>(
                 asset->storage->Size());
-            if (storage_size != package_entry.original_size) {
+            if (!options.allow_native_upload && storage_size != package_entry.original_size) {
                 AddIssue(
                     result, options, package_entry,
                     GeneralDdsCandidateIssueCode::original_size_mismatch,
@@ -183,19 +184,31 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 continue;
             }
 
-            if (dds.width != original_dds.width ||
+            const bool different_contract = dds.width != original_dds.width ||
                 dds.height != original_dds.height ||
                 dds.mip_count != original_dds.mip_count ||
                 dds.format != original_dds.format ||
                 dds.header_size != original_dds.header_size ||
                 dds.payload_size != original_dds.payload_size ||
                 dds.expected_file_size != original_dds.expected_file_size ||
-                dds.has_dx10_header != original_dds.has_dx10_header) {
+                dds.has_dx10_header != original_dds.has_dx10_header;
+            const bool native_upload = different_contract || asset->source_is_png;
+            if (different_contract && !options.allow_native_upload) {
                 AddIssue(
                     result, options, package_entry,
                     GeneralDdsCandidateIssueCode::original_contract_mismatch,
                     asset->mod_id,
                     L"mod DDS metadata differs from the installed original");
+                continue;
+            }
+
+            if (native_upload && (!options.allow_native_upload ||
+                NativeTextureFormat(dds.format) == kUnsupportedNativeTextureFormat ||
+                NativeTextureFormat(original_dds.format) == kUnsupportedNativeTextureFormat ||
+                dds.width > 16384 || dds.height > 16384)) {
+                AddIssue(result, options, package_entry,
+                    GeneralDdsCandidateIssueCode::original_contract_mismatch, asset->mod_id,
+                    L"native upload supports BGRA8, BC1, BC2, BC3 2D textures up to 16384 per dimension");
                 continue;
             }
 
@@ -237,6 +250,8 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 original->payload_sha256,
                 asset->storage->Sha256(),
                 replacement_payload_hash.digest,
+                native_upload,
+                original_dds,
             });
         }
 
@@ -263,6 +278,7 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
 std::span<const std::byte> GeneralDdsReplacementBytes(
     const GeneralDdsDryRunEvaluation& evaluation) noexcept {
     const GeneralDdsCandidate* const candidate = evaluation.candidate;
+    if (candidate && candidate->requires_native_upload) return {};
     if (candidate == nullptr || candidate->storage == nullptr) {
         return {};
     }
@@ -289,6 +305,7 @@ GeneralDdsDryRunEvaluation EvaluateGeneralDdsDryRun(
     if (candidate == nullptr) {
         return {GeneralDdsDryRunDecision::unmapped, nullptr};
     }
+    if (candidate->requires_native_upload) return {GeneralDdsDryRunDecision::unmapped, nullptr};
     if (!input.destination_valid || input.requested <= 0 || input.returned < 0 ||
         input.returned > input.requested) {
         return {GeneralDdsDryRunDecision::invalid, candidate};

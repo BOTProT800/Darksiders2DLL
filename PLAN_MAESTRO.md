@@ -1,3 +1,20 @@
+> Modelos (2026-09-16): 0.5.1-shape-trial acepta la cabeza exportada por ANANSI
+> con posiciones, normales y tangentes; mantiene límites, UV, pesos y topología
+> inmutables. El original extraído coincide con el miembro 187 del paquete y
+> la copia se usa como `death_head.2`. La sesión de observación identificó el
+> bloque editado y la segunda sesión produjo una escritura verificada, cero
+> fallos del escritor y confirmación visual del usuario. Esta prueba acredita
+> esa cabeza; no compatibilidad general ni estabilidad prolongada.
+> Véase [MODEL_TRIAL.md](research/MODEL_TRIAL.md).
+>
+> Actualización de identidad (2026-09-14, sesión UTC 2026-09-15): el usuario ya
+> instaló 0.4.0. La máscara con 11 mipmaps fue aceptada, pero no sustituida.
+> La cuenta de lecturas no equivale al índice de archivo. 0.4.1 diagnostic ya
+> sustituyó y verificó la máscara, con confirmación visual del usuario:
+> lectura 474, miembro 223, 699 064 bytes y cero fallos. Estado y evidencia en
+> [MASK_MEMBER_IDENTITY_FIX.md](research/MASK_MEMBER_IDENTITY_FIX.md).
+> Las menciones siguientes al proxy estable restaurado describen sesiones anteriores.
+>
 > Actualización 0.4.0 (2026-09-14): se retiró la dependencia del caso especial y
 > el escritor exacto. Debug y Release usan el motor general validado por contrato
 > y hash, con configuración INI, permiso de activación y bloqueo tras fallos.

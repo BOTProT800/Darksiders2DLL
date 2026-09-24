@@ -9,6 +9,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $validation = Get-Content -LiteralPath $ValidationPath -Raw | ConvertFrom-Json
+if ($validation.version -ne '0.4.0') {
+    throw 'Este empaquetador solo admite Release 0.4.0; no publiques un diagnostico con esa etiqueta.'
+}
 $hash = (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash
 if ($validation.status -ne 'PASS' -or $validation.dllSha256 -ne $hash -or !$validation.reproducible) {
     throw 'El binario no tiene validacion coincidente.'

@@ -1,4 +1,5 @@
 #include "package_dds_contract.h"
+#include "package_member_bytes.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -250,7 +251,8 @@ void AddIssue(
     const std::span<const PackageIdentityEntry* const> source_entries,
     const PackageDdsContractCatalogOptions& options,
     std::vector<PackageDdsContractEntry>& entries,
-    PackageDdsContractCatalogBuildResult& result) {
+    PackageDdsContractCatalogBuildResult& result,
+    std::vector<PackageMemberBytes>* recovered = nullptr) {
     std::uint64_t segment_end = 0;
     std::uint64_t size_position = 0;
     std::uint64_t compressed_begin = 0;
@@ -469,6 +471,11 @@ void AddIssue(
                 ERROR_INVALID_DATA, Z_STREAM_END,
                 L"a requested DDS interval was not fully recovered");
         }
+        if (recovered != nullptr) {
+            recovered->push_back({target.source->identity,
+                std::make_shared<const std::vector<std::byte>>(std::move(target.bytes))});
+            continue;
+        }
         auto validated = ValidateDds(target.bytes);
         if (!validated) {
             AddIssue(
@@ -503,6 +510,89 @@ void AddIssue(
 }
 
 }  // namespace
+
+PackageMemberReadResult ReadMediaPackageMembers(
+    const std::filesystem::path& game_directory,
+    const std::span<const PackageIdentityEntry> requested,
+    const PackageDdsContractCatalogOptions& limits) {
+    PackageMemberReadResult result;
+    auto& diagnostics = result.diagnostics;
+    try {
+        if (game_directory.empty() || requested.size() > 16'384 ||
+            limits.max_asset_bytes == 0 || limits.max_total_asset_bytes == 0 ||
+            limits.max_compressed_stream_bytes == 0 ||
+            limits.max_uncompressed_stream_bytes == 0 || limits.max_issue_count == 0) {
+            static_cast<void>(Fail(diagnostics,
+                PackageDdsContractCatalogError::invalid_argument, ERROR_INVALID_PARAMETER,
+                Z_OK, L"invalid raw member request or limits"));
+            return result;
+        }
+        if (requested.empty()) return result;
+        PackageFile package;
+        DWORD error{};
+        std::wstring detail;
+        if (!package.Open(game_directory / L"media" / L"media.upak", error, detail)) {
+            static_cast<void>(Fail(diagnostics,
+                PackageDdsContractCatalogError::package_open_failed, error, Z_OK, detail));
+            return result;
+        }
+        std::map<StreamGroupKey, std::vector<const PackageIdentityEntry*>> groups;
+        std::uint64_t total{};
+        for (const auto& entry : requested) {
+            std::uint64_t next{};
+            if (entry.original_size == 0 || entry.original_size > limits.max_asset_bytes ||
+                !CheckedAdd(total, static_cast<std::uint64_t>(entry.original_size), next) ||
+                next > limits.max_total_asset_bytes) {
+                static_cast<void>(Fail(diagnostics,
+                    PackageDdsContractCatalogError::invalid_argument, ERROR_FILE_TOO_LARGE,
+                    Z_OK, L"raw member byte budget exceeded"));
+                return result;
+            }
+            total = next;
+            if (entry.block_offset != 0) {
+                std::uint64_t size_position{};
+                std::array<std::byte, 4> declared{};
+                if (entry.block_offset < entry.identity.member_table_offset ||
+                    entry.block_end > entry.segment_size ||
+                    entry.block_end <= static_cast<std::uint64_t>(entry.block_offset) + 4 ||
+                    entry.uncompressed_offset != 0 ||
+                    !CheckedAdd(entry.identity.package_base,
+                                static_cast<std::uint64_t>(entry.block_offset), size_position) ||
+                    !package.ReadAt(size_position, declared, error) ||
+                    ReadU32(declared) != entry.original_size) {
+                    static_cast<void>(Fail(diagnostics,
+                        PackageDdsContractCatalogError::invalid_package, ERROR_INVALID_DATA,
+                        Z_OK, L"independent model block disagrees with its metadata or bounds"));
+                    return result;
+                }
+                groups[{entry.identity.package_base, entry.block_offset, entry.block_end}].push_back(&entry);
+            } else {
+                groups[{entry.identity.package_base, entry.identity.member_table_offset,
+                        entry.segment_size}].push_back(&entry);
+            }
+        }
+        std::vector<PackageDdsContractEntry> unused;
+        for (const auto& [key, sources] : groups) {
+            if (!InflateGroup(package, key, sources, limits, unused, diagnostics, &result.members) ||
+                !diagnostics.issues.empty()) {
+                result.members.clear();
+                return result;
+            }
+        }
+        std::sort(result.members.begin(), result.members.end(),
+            [](const auto& a, const auto& b) { return IdentityLess(a.identity, b.identity); });
+        for (std::size_t i = 1; i < result.members.size(); ++i) {
+            if (result.members[i - 1].identity == result.members[i].identity)
+                throw std::runtime_error("duplicate raw identity");
+        }
+    } catch (...) {
+        result.members.clear();
+        static_cast<void>(Fail(diagnostics,
+            PackageDdsContractCatalogError::invalid_package, ERROR_INVALID_DATA,
+            Z_OK, L"raw member extraction failed"));
+    }
+    return result;
+}
 
 PackageDdsContractCatalogSnapshot::PackageDdsContractCatalogSnapshot(
     std::vector<PackageDdsContractEntry> entries) noexcept

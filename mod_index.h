@@ -24,6 +24,7 @@ struct IndexedAsset final {
     std::filesystem::path source_path;
     std::shared_ptr<const ByteStorage> storage;
     std::optional<DdsMetadata> dds;
+    bool source_is_png{};
 };
 
 enum class ModIndexIssueCode {
@@ -58,6 +59,9 @@ enum class ModIndexError {
 
 struct ModIndexOptions final {
     bool dds_only{false};
+    bool include_native_models{false};
+    bool include_png{false};
+    bool include_inventory_scripts{false};
     std::uint64_t max_asset_file_size{128ull * 1024ull * 1024ull};
     std::uint64_t max_total_bytes{1024ull * 1024ull * 1024ull};
     std::size_t max_asset_count{16'384};

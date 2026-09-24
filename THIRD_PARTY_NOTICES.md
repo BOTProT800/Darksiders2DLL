@@ -1,5 +1,40 @@
 # Third-party notices
 
+## Darkstractor, Darkside Mod Manager and Anansi format references
+
+The three local source projects carry the MIT notice reproduced below:
+
+- Darkstractor: `https://github.com/BOTProT800/Darkstractor`, local `LICENSE`.
+- Darkside Mod Manager: `https://github.com/BOTProT800/Darkside-Mod-Manager`, local `LICENSE`.
+- Anansi: `https://github.com/BOTProT800/ANANSI`, local `LICENSE` (source code only).
+
+See [CREDITS.md](CREDITS.md) for the source files consulted and the earlier
+community research they acknowledge. This notice does not cover those
+community sources or the separate tools bundled by Anansi; those tools are
+not distributed with Darksiders2DLL.
+
+MIT License
+
+Copyright (c) 2026 BOTProT800
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## MinHook
 
 MinHook - The Minimalistic API Hooking Library for x64/x86  

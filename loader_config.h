@@ -4,9 +4,14 @@
 #include <string_view>
 
 namespace ds2::modding {
+enum class ModelMode { off, observe, override_positions, override_shape };
+enum class ScriptMode { off, observe, inventory };
 struct LoaderConfig final {
     bool enabled{true};
     bool write_enabled{true};
+    bool native_textures{true};
+    ModelMode models{ModelMode::off};
+    ScriptMode scripts{ScriptMode::off};
 };
 struct LoaderConfigResult final {
     LoaderConfig config;

@@ -32,6 +32,10 @@ struct PackageIdentityEntry final {
     std::uint64_t uncompressed_offset{};
     std::uint32_t original_size{};
     std::uint32_t type_id{};
+    // Optional independent zlib block, relative to package_base. Identity still
+    // uses the segment's payload/table offset observed on the runtime owner.
+    std::uint32_t block_offset{};
+    std::uint64_t block_end{};
 };
 
 enum class PackageIdentityCatalogError {
@@ -60,6 +64,7 @@ struct PackageIdentityCatalogIssue final {
 };
 
 struct PackageIdentityCatalogOptions final {
+    bool allow_member_blocks{false}; // experimental native-model catalog only
     std::uint64_t max_manifest_bytes{16ull * 1024ull * 1024ull};
     std::size_t max_requested_paths{16'384};
     std::size_t max_manifest_paths{2'000'000};

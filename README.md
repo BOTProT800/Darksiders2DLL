@@ -1,4 +1,36 @@
-# Darksiders2DLL 0.4.0
+# Darksiders2DLL
+
+**Código actual: 0.7.0-inventory-trial.** Admite mods de `media/scripts.obsp`
+limitados a los siete valores `NumSlots`, con validación completa del original,
+identidad de archivo y apertura de una copia del mod. Se activa con
+`scripts=inventory`; por defecto está apagado. Incluye generador y comprobador
+offline. [Uso y límites](distribution/INVENTARIO.md).
+La capacidad y las partidas aún requieren validación en el juego.
+
+**Texturas: 0.6.0-texture-trial.** Añade reemplazos DDS de resolución
+variable y PNG (incluidos rectangulares) mediante la creación nativa de texturas
+2D. Los reemplazos grandes nunca se copian al buffer del original. Conserva el
+cargador de modelos 0.5.1. Esta ruta nueva necesita validación visual en el juego;
+las pruebas offline no equivalen a esa validación. [Uso y límites](distribution/TEXTURAS_HD.md)
+y [contrato del hook](research/NATIVE_TEXTURE_UPLOAD.md).
+
+**Versión anterior: 0.5.1-shape-trial.** Preparación experimental de cambios de
+posición, normales y tangentes en modelos nativos `.2`, con límites, UV y pesos
+inmutables, validador previo y modos de observación y
+reemplazo. La edición de `death_head.2` del usuario ya se sustituyó y verificó
+en el juego, con confirmación visual (16 de septiembre de 2026). Los modelos
+siguen desactivados por defecto en el paquete. [Guía de la prueba](distribution/MODELOS_PRUEBA.md) y
+[contrato técnico](research/MODEL_TRIAL.md).
+La instalación de prueba usa `models=override_shape`; conserva el respaldo de
+**0.4.1-diagnostic** y también verificó el reemplazo de la máscara DDS.
+Las instrucciones del ZIP 0.4.0 que siguen describen el paquete anterior.
+
+**Fallo confirmado en 0.4.0:** algunas texturas válidas, incluida la máscara de
+Death, no se sustituyen porque el contador de lecturas se usaba como índice de
+archivo. La corrección `0.4.1-diagnostic` usa el índice real del juego: la máscara
+ya se sustituyó y verificó en una sesión con confirmación visual del usuario.
+[Diagnóstico y estado](research/MASK_MEMBER_IDENTITY_FIX.md).
+El ZIP 0.4.0 conserva esa limitación.
 
 Cargador x64 de texturas DDS mediante un proxy de `dinput8.dll` para
 **Darksiders II Deathinitive Edition**. Los mods se leen de archivos sueltos;
@@ -9,6 +41,19 @@ y de sus hashes fijos. Debug y Release usan el catálogo general de DDS,
 identidad de recursos y validación del contenido original. Cada candidato puede
 pertenecer a cualquier mod; los conflictos se resuelven por orden léxico del
 nombre normalizado de la carpeta.
+
+## Compatibilidad
+
+**Importante:** este cargador usa un proxy de `dinput8.dll` para cargarse junto a
+`Darksiders2.exe`, igual que "DLL Loader for Darksiders 2" (LOKI). Ambos compiten
+por el mismo archivo `dinput8.dll`: **no se pueden instalar los dos a la vez**.
+Si ya tienes el DLL Loader de LOKI (o mods que dependen de él, como Custom FOV o
+DS2LM), quítalo antes de instalar este.
+
+Este proyecto es una implementación independiente del mismo patrón de proxy
+DirectInput, con foco en la carga de texturas DDS. No es un fork ni contiene
+código del DLL Loader de LOKI. El detalle completo de referencias e influencias
+está en [CREDITS.md](CREDITS.md).
 
 ## Instalar y configurar
 
@@ -93,6 +138,18 @@ El empaquetador verifica la huella de la DLL y las fuentes contra la evidencia.
 El ZIP tiene una lista cerrada de archivos; PDB, ejecutables, DDS y fixtures no
 se distribuyen. El ZIP y sus hashes no llevan firma digital y no prueban por sí
 solos la identidad de quien los publica.
+
+## Créditos
+
+La DLL incorpora **MinHook**, de Tsuda Kageyu y colaboradores (incluido HDE,
+de Vyacheslav Patkov), y **zlib**, de Jean-loup Gailly y Mark Adler, mediante
+enlace estático. Los lectores de formatos se apoyan en las referencias de
+**Darkstractor, Darkside Mod Manager y Anansi**, de BOTProT800, y en la
+investigación previa de la comunidad que esos proyectos reconocen.
+
+Las aportaciones y fuentes están detalladas en [CREDITS.md](CREDITS.md), y los
+avisos de licencia en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+El empaquetador incluye ambos archivos en el ZIP.
 
 ## Historial
 

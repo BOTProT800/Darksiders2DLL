@@ -7,7 +7,9 @@ bool IsResourceIdentitySampleUsable(
     const std::uintptr_t expected_scope_caller_rva,
     const std::uintptr_t expected_read_caller_rva) noexcept {
     return sample.sequence != 0 && sample.nesting_depth != 0 &&
-        sample.read_ordinal != 0 && sample.scope.object_fields_valid &&
+        sample.read_ordinal != 0 && sample.read.member_ordinal != 0 &&
+        sample.read.member_ordinal <= kResourceIdentityMaxMembersPerScope &&
+        sample.scope.object_fields_valid &&
         sample.scope.stream_valid && sample.scope.stream != 0 &&
         sample.scope.member_table_offset >= 0 && sample.read.stream != 0 &&
         sample.scope.caller_rva == expected_scope_caller_rva &&

@@ -33,6 +33,9 @@ struct GeneralDdsCandidate final {
     Sha256Digest original_payload_sha256{};
     Sha256Digest replacement_full_sha256{};
     Sha256Digest replacement_payload_sha256{};
+    // Native uploads own their bytes; they must NEVER reach the stream writer.
+    bool requires_native_upload{};
+    DdsMetadata original_dds;
 };
 
 enum class GeneralDdsCandidateIssueCode {
@@ -66,6 +69,7 @@ enum class GeneralDdsCandidateError {
 
 struct GeneralDdsCandidateOptions final {
     std::size_t max_issue_count{1'024};
+    bool allow_native_upload{false};
 };
 
 struct GeneralDdsCandidateBuildResult;

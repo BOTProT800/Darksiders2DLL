@@ -1,4 +1,5 @@
 #include "mod_index.h"
+#include "png_texture.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -224,7 +225,17 @@ bool IndexMod(
                 iterator.disable_recursion_pending();
             } else {
                 const auto relative = entry_path.lexically_relative(mod.path);
-                const auto normalized = NormalizeVirtualPath(relative.generic_wstring());
+                auto normalized = NormalizeVirtualPath(relative.generic_wstring());
+                const auto source_virtual_path = normalized;
+                const bool png = options.include_png && normalized &&
+                    normalized.path->key.ends_with(L".png");
+                if (png) {
+                    auto target = normalized.path->display;
+                    target.resize(target.size() - 4);
+                    if (!EndsWithDds(normalized.path->key.substr(0, normalized.path->key.size()-4)))
+                        target += L".dds";
+                    normalized = NormalizeVirtualPath(target);
+                }
                 if (!normalized) {
                     AddIssue(result, options.max_issue_count, ModIndexIssueCode::unsafe_virtual_path, mod.id, entry_path,
                              ERROR_INVALID_NAME,
@@ -233,7 +244,9 @@ bool IndexMod(
                     if (directory) {
                         iterator.disable_recursion_pending();
                     }
-                } else if (!directory && (!options.dds_only || EndsWithDds(normalized.path->key))) {
+                } else if (!directory && (!options.dds_only || png || EndsWithDds(normalized.path->key) ||
+                    (options.include_native_models && normalized.path->key.ends_with(L".2")) ||
+                    (options.include_inventory_scripts && normalized.path->key == L"media/scripts.obsp"))) {
                     const bool regular = iterator->is_regular_file(type_error);
                     if (type_error || !regular) {
                         AddIssue(result, options.max_issue_count, ModIndexIssueCode::not_regular_file, mod.id, entry_path,
@@ -267,7 +280,7 @@ bool IndexMod(
                         }
 
                         VirtualPathError resolution_error = VirtualPathError::none;
-                        const auto resolved = ResolveUnderRoot(mod.path, *normalized.path, &resolution_error);
+                        const auto resolved = ResolveUnderRoot(mod.path, *source_virtual_path.path, &resolution_error);
                         if (!resolved) {
                             AddIssue(result, options.max_issue_count, ModIndexIssueCode::unsafe_virtual_path, mod.id, entry_path,
                                      ERROR_ACCESS_DENIED,
@@ -285,6 +298,16 @@ bool IndexMod(
                                 (std::min)(options.max_asset_file_size, remaining_total);
                             auto loaded = LoadByteStorageUnderRoot(
                                 mod.path, *resolved, effective_file_limit);
+                            if (loaded && png) {
+                                // Count compressed input too: bound temporary plus decoded storage.
+                                const auto input_size = loaded.storage->Size();
+                                const auto decode_limit = effective_file_limit > input_size
+                                    ? effective_file_limit - input_size : 0;
+                                auto decoded = DecodePngTexture(loaded.storage->Bytes(), decode_limit);
+                                if (decoded && !ConsumeBytes(budget, input_size, options, result, mod.id, *resolved))
+                                    return false;
+                                loaded = std::move(decoded);
+                            }
                             if (!loaded) {
                                 if (loaded.error == ByteLoadError::allocation_failed) {
                                     result.error = ModIndexError::allocation_failed;
@@ -325,7 +348,7 @@ bool IndexMod(
                                 if (!EndsWithDds(normalized.path->key) || dds.has_value()) {
                                     state->second.asset.emplace(IndexedAsset{
                                         mod.id, mod.key, priority, std::move(*normalized.path),
-                                        *resolved, std::move(loaded.storage), std::move(dds)});
+                                        *resolved, std::move(loaded.storage), std::move(dds), png});
                                 }
                             }
                         }

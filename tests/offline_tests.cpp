@@ -1,4 +1,10 @@
 #include "byte_storage.h"
+#include "model_tests.h"
+#include "texture_tests.h"
+#include "inventory_script_tests.h"
+#include "native_texture.h"
+#include "model_candidate.h"
+#include "package_member_bytes.h"
 #include "dds_validation.h"
 #include "game_build.h"
 #include "general_dds_candidate.h"
@@ -171,6 +177,25 @@ SyntheticObpk MakeSyntheticNamedObpk(
     return fixture;
 }
 
+SyntheticObpk MakeSyntheticModelBlocks(const std::array<std::vector<std::byte>, 2>& members) {
+    auto fixture = MakeSyntheticNamedObpk(true, 2,
+        {static_cast<std::uint32_t>(members[0].size()), static_cast<std::uint32_t>(members[1].size())});
+    fixture.bytes.resize(fixture.payload_offset);
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        PutU32(fixture.bytes, fixture.payload_offset - 8 + i * 4,
+               static_cast<std::uint32_t>(fixture.bytes.size()));
+        AppendU32(fixture.bytes, static_cast<std::uint32_t>(members[i].size()));
+        uLongf size = compressBound(static_cast<uLong>(members[i].size()));
+        std::vector<std::byte> packed(size);
+        Require(compress2(reinterpret_cast<Bytef*>(packed.data()), &size,
+                          reinterpret_cast<const Bytef*>(members[i].data()),
+                          static_cast<uLong>(members[i].size()), Z_BEST_COMPRESSION) == Z_OK,
+                "model block fixture compression failed");
+        fixture.bytes.insert(fixture.bytes.end(), packed.begin(), packed.begin() + size);
+    }
+    return fixture;
+}
+
 SyntheticObpk MakeSyntheticEmptyObpk() {
     constexpr std::uint32_t table_offset = 0x40;
     SyntheticObpk fixture;
@@ -288,7 +313,7 @@ std::vector<std::byte> MakeDx10Bc3Dds4x4() {
 }
 
 SyntheticObpk MakeSyntheticDdsStreamObpk(
-    const std::array<std::vector<std::byte>, 2>& members) {
+    const std::array<std::vector<std::byte>, 2>& members, const std::uint32_t type_id = 6) {
     Require(
         members[0].size() <= (std::numeric_limits<std::uint32_t>::max)() &&
             members[1].size() <= (std::numeric_limits<std::uint32_t>::max)(),
@@ -296,7 +321,7 @@ SyntheticObpk MakeSyntheticDdsStreamObpk(
     const std::array<std::uint32_t, 2> sizes{
         static_cast<std::uint32_t>(members[0].size()),
         static_cast<std::uint32_t>(members[1].size())};
-    SyntheticObpk fixture = MakeSyntheticNamedObpk(false, 6, sizes);
+    SyntheticObpk fixture = MakeSyntheticNamedObpk(false, type_id, sizes);
 
     std::vector<std::byte> unpacked;
     unpacked.reserve(members[0].size() + members[1].size());
@@ -671,6 +696,7 @@ void TestResourceIdentityCorrelation() {
     read.stream = 0x2100;
     read.destination = 0x3000;
     read.caller_rva = 0x9FF0D2;
+    read.member_ordinal = 223;
     read.requested = 4096;
     read.returned = 4096;
     read.hash_valid = true;
@@ -681,7 +707,8 @@ void TestResourceIdentityCorrelation() {
                 ResourceIdentityObserveStatus::recorded,
             "matching outer resource stream was not correlated");
     Require(sample.sequence == 41 && sample.nesting_depth == 1 &&
-                sample.read_ordinal == 1 && sample.scope.owner == 0x1000 &&
+                sample.read_ordinal == 1 && sample.read.member_ordinal == 223 &&
+                sample.scope.owner == 0x1000 &&
                 sample.scope.argument4 == 0x1300 &&
                 sample.scope.object_fields_valid && sample.scope.stream_valid &&
                 sample.scope.stream == 0x2000 &&
@@ -722,6 +749,13 @@ void TestResourceIdentityCorrelation() {
     Require(!IsResourceIdentitySampleUsable(
                 unusable, 0x9FA980, 0x9FF0D2),
             "zero ordinal passed the final identity gate");
+    unusable = sample;
+    unusable.read.member_ordinal = 0;
+    Require(!IsResourceIdentitySampleUsable(unusable, 0x9FA980, 0x9FF0D2),
+            "missing member identity fell back to read ordinal");
+    unusable.read.member_ordinal = kResourceIdentityMaxMembersPerScope + 1;
+    Require(!IsResourceIdentitySampleUsable(unusable, 0x9FA980, 0x9FF0D2),
+            "out of bounds member index passed the final identity gate");
 
     ResourceIdentityReadInput invalid_read_stream = read;
     invalid_read_stream.stream = 0;
@@ -1073,6 +1107,72 @@ void TestPackageIdentityCatalog(const std::filesystem::path& root) {
             "empty package catalog unnecessarily touched the game files");
 }
 
+void TestPackageModels(const std::filesystem::path& root) {
+    constexpr std::uint64_t base = 0x100;
+    const auto game = root / L"model-package-game", mods = root / L"model-package-mods";
+    std::filesystem::create_directories(game / L"media");
+    std::filesystem::create_directories(mods / L"geometry_demo/media/ui/fixture");
+    const std::array originals{MakeTestModel(false), MakeTestModel(true)};
+    auto obpk = MakeSyntheticDdsStreamObpk(originals, 2);
+    const auto write_package = [&] {
+        std::vector<std::byte> bytes(base);
+        bytes.insert(bytes.end(), obpk.bytes.begin(), obpk.bytes.end());
+        WriteBytes(game / L"media/media.upak", bytes);
+    };
+    write_package();
+    WriteBytes(game / L"media/manifest.bin", MakeSyntheticManifest(base));
+    WriteBytes(mods / L"geometry_demo/media/ui/fixture/first.2", originals[0]);
+    WriteBytes(mods / L"geometry_demo/media/ui/fixture/second.2", originals[1]);
+    ModIndexOptions options; options.dds_only = true; options.include_native_models = true;
+    const auto indexed = BuildModIndex(mods, options);
+    Require(indexed && indexed.snapshot->Assets().size() == 2, "packaged model fixture indexing failed");
+    std::vector<CanonicalVirtualPath> paths;
+    for (const auto& asset : indexed.snapshot->Assets()) paths.push_back(asset.virtual_path);
+    const auto catalog = BuildMediaPackageIdentityCatalog(game, paths);
+    Require(catalog && catalog.snapshot->Entries().size() == 2, "native model identity not found");
+    const auto entries = catalog.snapshot->Entries();
+    const auto recovered = ReadMediaPackageMembers(game, entries);
+    Require(recovered && recovered.members.size() == 2 &&
+            *recovered.members[0].bytes == originals[0] && *recovered.members[1].bytes == originals[1],
+            "native model raw extraction differs");
+    const auto candidates = BuildModelCandidates(game, *indexed.snapshot);
+    Require(candidates.snapshot && candidates.error.empty() && candidates.issues.empty() &&
+            candidates.snapshot->entries.size() == 2, "native model package join failed");
+    PackageDdsContractCatalogOptions limits;
+    limits.max_total_asset_bytes = 1;
+    Require(!ReadMediaPackageMembers(game, entries, limits), "raw model byte budget ignored");
+    limits = {}; limits.max_uncompressed_stream_bytes = 1;
+    Require(!ReadMediaPackageMembers(game, entries, limits), "raw model stream budget ignored");
+    std::array duplicate{entries.front(), entries.front()};
+    const auto duplicated = ReadMediaPackageMembers(game, duplicate);
+    Require(!duplicated && duplicated.members.empty(), "duplicate raw identity accepted");
+    obpk.bytes.back() ^= std::byte{1}; write_package();
+    const auto corrupt = ReadMediaPackageMembers(game, entries);
+    Require(!corrupt && corrupt.members.empty(), "raw model stream checksum not checked");
+    const auto blocked = BuildModelCandidates(game, *indexed.snapshot);
+    Require(!blocked.snapshot && !blocked.error.empty(), "corrupt model original became a candidate");
+    obpk = MakeSyntheticModelBlocks(originals); write_package();
+    PackageIdentityCatalogOptions block_options; block_options.allow_member_blocks = true;
+    const auto block_catalog = BuildMediaPackageIdentityCatalog(game, paths, block_options);
+    Require(block_catalog && block_catalog.snapshot->Entries().size() == 2, "model block catalog failed");
+    const auto block_entries = block_catalog.snapshot->Entries();
+    const auto block_members = ReadMediaPackageMembers(game, block_entries);
+    Require(block_members && block_members.members.size() == 2 &&
+            *block_members.members[0].bytes == originals[0] && *block_members.members[1].bytes == originals[1],
+            "model block extraction differs");
+    const auto block_candidates = BuildModelCandidates(game, *indexed.snapshot);
+    Require(block_candidates.snapshot && block_candidates.snapshot->entries.size() == 2 &&
+            block_candidates.error.empty() && block_candidates.issues.empty(), "block model join failed");
+    auto invalid = block_entries.front(); ++invalid.original_size;
+    Require(!ReadMediaPackageMembers(game, std::span(&invalid, 1)), "model block declared size not checked");
+    invalid = block_entries.front(); invalid.block_end = invalid.block_offset + 4ull;
+    Require(!ReadMediaPackageMembers(game, std::span(&invalid, 1)), "model block extent not checked");
+    obpk.bytes.back() ^= std::byte{1}; write_package();
+    const auto bad_block = ReadMediaPackageMembers(game, block_entries);
+    Require(!bad_block && bad_block.members.empty(), "partial raw model catalog escaped bad checksum");
+    std::cout << "model_package: PASS (single/block streams, identity, native join, budgets, checksum, extent)\n";
+}
+
 void TestPackageDdsContractCatalog(const std::filesystem::path& root) {
     constexpr std::uint64_t segment_offset = 0x100;
     const auto game = root / L"package-dds-contract-game";
@@ -1379,6 +1479,17 @@ void TestGeneralDdsCandidates(const std::filesystem::path& root) {
     const auto mismatch = BuildGeneralDdsCandidateSnapshot(
         catalog.snapshot.get(), contracts.snapshot.get(),
         mismatch_index.snapshot.get());
+    GeneralDdsCandidateOptions native_options;
+    native_options.allow_native_upload = true;
+    const auto native = BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(),
+        contracts.snapshot.get(), mismatch_index.snapshot.get(), native_options);
+    Require(native && native.issues.empty() && native.snapshot->Entries().size() == 2 &&
+        native.snapshot->Find(second_identity)->requires_native_upload,
+        "variable-size native DDS candidate not admitted");
+    GeneralDdsDryRunInput native_input{};
+    native_input.identity = second_identity;
+    Require(EvaluateGeneralDdsDryRun(native.snapshot.get(), native_input).candidate == nullptr,
+        "native DDS reached stream writer evaluation");
     Require(mismatch && mismatch.snapshot->Entries().size() == 1 &&
                 HasGeneralDdsIssue(
                     mismatch,
@@ -1756,6 +1867,31 @@ void TestSupportedGame(const std::filesystem::path& executable_path) {
     // In this PE, .text starts at RVA 0x1000 and raw offset 0x400.
     Require(raw_offset == 0x009FE25C && raw_offset + 0xC00 == 0x009FEE5C,
             "resource identity candidate signature moved from the expected RVA");
+    // Independently check the real executable's loop, not only the synthetic
+    // caller frame used by the runtime tests. File index lives at rsp+0x30;
+    // RCX at the intercepted read is rsp+0x70. The index advances per file.
+    const auto expect_code = [&](const std::size_t rva, const char* signature) {
+        const auto parsed = ParseSignature(signature);
+        Require(static_cast<bool>(parsed), "member-frame signature did not parse");
+        const auto bytes = image.storage->Bytes().subspan(rva - 0xC00,
+                                                         parsed.pattern.size());
+        const auto match = ScanUnique(bytes, parsed.pattern);
+        Require(match && match.matches == 1, "supported game member frame changed");
+    };
+    expect_code(0x9FEEF9, "33 D2 48 89 54 24 30");
+    expect_code(0x9FF140, "48 FF 44 24 30");
+    expect_code(0x9FF0C8, "48 8D 4C 24 70 E8 EE CC 6A FF");
+    expect_code(kNativeTextureUploadRva, kNativeTextureUploadSignature);
+    const auto upload_pattern = ParseSignature(kNativeTextureUploadSignature);
+    Require(ScanUnique(image.storage->Bytes(), upload_pattern.pattern).matches == 1,
+        "native texture upload signature is not unique");
+    expect_code(0x1088441, "89 44 24 20 44 0F B7 4B 0A 44 0F B7 43 08 48 8B CF E8 D5 61 CC FF");
+    expect_code(0xD4E7C7, "E8 58 FC FF FF");
+    expect_code(0xD4E45B, "FF 50 28");
+    expect_code(0x7512D9, "41 B8 57 00 00 00");
+    expect_code(0x75134E, "41 B8 4D 00 00 00");
+    expect_code(0x751356, "41 B8 4A 00 00 00");
+    expect_code(0x75135E, "41 B8 47 00 00 00");
 
     auto target_path = NormalizeVirtualPath(
         L"media/ui/ui_icons_small/"
@@ -1764,12 +1900,14 @@ void TestSupportedGame(const std::filesystem::path& executable_path) {
         L"media/ui/ui_core/ui_icon_highlight.dds");
     auto different_size_path = NormalizeVirtualPath(
         L"media/ui/ui_core/icon_artifact.dds");
-    Require(target_path && second_path && different_size_path,
+    auto mask_path = NormalizeVirtualPath(L"media/characters/death/Base_Mask_Diff.dds");
+    Require(target_path && second_path && different_size_path && mask_path,
             "real package identity paths did not normalize");
-    std::array<CanonicalVirtualPath, 3> requested{
+    std::array<CanonicalVirtualPath, 4> requested{
         std::move(*target_path.path),
         std::move(*second_path.path),
         std::move(*different_size_path.path),
+        std::move(*mask_path.path),
     };
     const auto catalog = BuildMediaPackageIdentityCatalog(
         executable_path.parent_path(), requested);
@@ -1802,8 +1940,22 @@ void TestSupportedGame(const std::filesystem::path& executable_path) {
     const auto contracts = BuildMediaPackageDdsContractCatalog(
         executable_path.parent_path(), catalog.snapshot.get());
     Require(contracts && contracts.issues.empty() &&
-                contracts.snapshot->Entries().size() == 3,
+                contracts.snapshot->Entries().size() == 4,
             "installed original DDS contract catalog did not build cleanly");
+    const auto* const mask = catalog.snapshot->Find(requested[3]);
+    Require(mask != nullptr &&
+                mask->identity == PackageResourceIdentity{0x31374000, 0x13800, 223} &&
+                mask->original_size == 699192 && mask->type_id == 6,
+            "mask package identity differs from regression evidence");
+    const auto* const mask_contract = contracts.snapshot->Find(mask->identity);
+    Require(mask_contract && mask_contract->dds.width == 1024 &&
+                mask_contract->dds.height == 1024 && mask_contract->dds.mip_count == 11 &&
+                mask_contract->dds.format == DdsFormat::bc1 &&
+                Sha256EqualsHex(mask_contract->full_sha256,
+                    L"4223A5C803742980454DD5056CBF03DE1C95CE06ABC723D7229928D2C2E179F6") &&
+                Sha256EqualsHex(mask_contract->payload_sha256,
+                    L"93AA44179BA0185CC5E632E7A1EAEB2B45791136B6C4BA2FA32FF25AE8AAF694"),
+            "mask original DDS contract differs from regression evidence");
     const auto* const target_contract = contracts.snapshot->Find(target->identity);
     const auto* const second_contract = contracts.snapshot->Find(second->identity);
     const auto* const different_size_contract =
@@ -1914,20 +2066,39 @@ void TestLoaderConfig(const std::filesystem::path& root) {
 
 int wmain(const int argc, wchar_t** argv) {
     try {
+        if (argc == 4 && std::wstring_view(argv[1]) == L"--inventory-check")
+            return CheckInventoryScriptMod(argv[2], argv[3]);
+        if (argc == 3 && std::wstring_view(argv[1]) == L"--texture-check")
+            return CheckTextureFiles(argv[2]);
+        if (argc == 4 && std::wstring_view(argv[1]) == L"--texture-catalog")
+            return CheckTextureCatalog(argv[2], argv[3]);
+        if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--model-")) {
+            if (argc == 4 && std::wstring_view(argv[1]) == L"--model-check")
+                return CheckModelFiles(argv[2], argv[3]);
+            if (argc == 4 && std::wstring_view(argv[1]) == L"--model-catalog")
+                return CheckModelCatalog(argv[2], argv[3]);
+            std::cerr << "Usage: offline_tests --model-check ORIGINAL.2 MODIFIED.2\n"
+                         "       offline_tests --model-catalog GAME_DIRECTORY MODS_DIRECTORY\n";
+            return 2;
+        }
         TemporaryDirectory temporary;
         TestVirtualPaths();
         TestHashAndBuildFailClosed(temporary.Path());
         TestDdsValidation();
+        TestNativeTextures(temporary.Path());
         TestReadableMemoryRange();
         TestSignatureScanner();
         TestResolverProbeFilter();
         TestResourceIdentityCorrelation();
         TestPackageIdentityCatalog(temporary.Path());
         TestPackageDdsContractCatalog(temporary.Path());
+        TestPackageModels(temporary.Path());
         TestLogger(temporary.Path());
         TestLoaderConfig(temporary.Path());
+        TestInventoryScripts(temporary.Path());
         TestModIndex(temporary.Path());
         TestGeneralDdsCandidates(temporary.Path());
+        TestModels(temporary.Path());
         TestByteStorageContainment(temporary.Path());
         TestModIndexLimits(temporary.Path());
         TestCanonicalModIdCollision(temporary.Path());

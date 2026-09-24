@@ -1,6 +1,7 @@
 #pragma once
 
 #include "byte_storage.h"
+#include "model_candidate.h"
 #include "loader_features.h"
 #if defined(DS2_GENERAL_DDS_ENABLED) && \
     !defined(DS2_RESOURCE_IDENTITY_ENABLED)
@@ -43,6 +44,7 @@ enum class ResolverProbeState {
 };
 
 enum class ResolverProbeEventKind {
+    model_read,
     stream_first_entry,
     package_segment_read,
     stream_sample,
@@ -90,6 +92,12 @@ struct ResolverProbeEvent final {
     bool call_succeeded{};
     bool target_hash_matched{};
     bool replacement_applied{};
+    bool model_range_matched{};
+    bool model_range_changed{};
+    bool model_write_attempted{};
+    bool model_write_verified{};
+    std::uint32_t model_offset{};
+    std::uint32_t model_write_error{};
     std::uint16_t frame_count{};
     std::array<std::uintptr_t, kResolverProbeMaxFrames> frames{};
     std::uint32_t sample_size{};
@@ -120,6 +128,7 @@ struct ResolverProbeStatus final {
 };
 
 struct ResolverProbeStats final {
+    std::uint64_t model_reads{}, model_matches{}, model_write_attempts{}, model_writes{}, model_failures{};
     std::uint64_t read_file_calls{};
     std::uint64_t package_segment_reads{};
     std::uint64_t target_sized_stream_reads{};
@@ -132,6 +141,7 @@ struct ResolverProbeStats final {
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
     std::uint64_t resource_identity_scopes{};
     std::uint64_t resource_identity_samples{};
+    std::uint64_t resource_identity_invalid_members{};
     std::uint64_t resource_identity_overflows{};
     std::uint64_t resource_identity_context_resets{};
 #endif
@@ -166,7 +176,9 @@ void SetResolverProbeEventCallback(
     HMODULE game_module,
     const std::filesystem::path& media_upak_path,
     std::shared_ptr<const GeneralDdsCandidateSnapshot> general_candidates,
-    bool write_enabled = true) noexcept;
+    bool write_enabled = true,
+    std::shared_ptr<const ModelCandidateSnapshot> model_candidates = {},
+    bool model_write_enabled = false) noexcept;
 
 [[nodiscard]] bool TryPopResolverProbeEvent(
     ResolverProbeEvent& event) noexcept;
