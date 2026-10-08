@@ -40,10 +40,22 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
         error = L"invalid native model identity/storage";
         return false;
     }
-    const auto replacement = asset.storage->Bytes();
+    auto storage = asset.storage;
+    std::uint32_t removed_vertices = 0, removed_triangles = 0;
+    if (contract == ModelEditContract::bounded_shape && storage->Size() < original.size()) {
+        auto expanded = ExpandModelDeletion(original, storage->Bytes());
+        if (!expanded) { error = L"deletion: " + expanded.error; return false; }
+        removed_vertices = expanded.removed_vertices;
+        removed_triangles = expanded.removed_triangles;
+        auto rebuilt = MakeByteStorage(std::move(expanded.bytes));
+        if (!rebuilt) { error = L"expanded model storage failed"; return false; }
+        storage = std::move(rebuilt.storage);
+    }
+    const auto replacement = storage->Bytes();
     const auto validated = ValidateModelEdit(original, replacement, contract);
     if (!validated) { error = validated.error; return false; }
-    ModelCandidate prepared{entry.identity, entry.virtual_path, asset.mod_id, asset.storage, {}};
+    ModelCandidate prepared{entry.identity, entry.virtual_path, asset.mod_id, storage, {},
+                            asset.storage->Size(), removed_vertices, removed_triangles};
     const auto add_range = [&](const std::uint32_t offset, const std::uint32_t size) {
         if (size == 0 || offset > original.size() || size > original.size() - offset) return false;
         for (const auto& range : prepared.ranges)
@@ -59,7 +71,8 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
         error = L"model range hashing failed"; return false;
     }
     for (const auto& block : validated.layout.vertex_blocks) {
-        if (!add_range(block.offset, block.size)) {
+        // The engine reads each index buffer on its own, after its 8-byte prefix.
+        if (!add_range(block.index_offset, block.index_count * 2) || !add_range(block.offset, block.size)) {
             error = L"model vertex range hashing failed"; return false;
         }
     }

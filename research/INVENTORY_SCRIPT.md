@@ -1,5 +1,10 @@
 # Evidencia del parche de inventario
 
+> **Retirado el 4 de octubre de 2026.** El mod de inventario se abandonó y su
+> código (`scripts=`, hook de `CreateFile`, generador y pruebas) se eliminó de la
+> DLL; está en el commit `cde33df`. Este documento se conserva solo como
+> investigación del formato OBSP, que cita D2ScriptViewer.
+
 Investigación local del 19 de septiembre de 2026. No se incorporaron scripts del
 juego ni datos de partidas al repositorio.
 

@@ -77,14 +77,14 @@
       <PreprocessorDefinitions Condition="'$(TestGeneralResolverWrite)'!='true'">DS2_TEST_OBSERVE_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- MASM keeps the call site stable while Release tests optimize the real detour. -->
     </ClCompile>
+    <ClCompile Include="animation_candidate.cpp" />
+    <ClCompile Include="animation_validation.cpp" />
     <ClCompile Include="byte_storage.cpp" />
     <ClCompile Include="dds_validation.cpp" />
     <ClCompile Include="game_build.cpp" />
     <ClCompile Include="general_dds_candidate.cpp" />
     <ClCompile Include="logging.cpp" />
     <ClCompile Include="loader_config.cpp" />
-    <ClCompile Include="inventory_script.cpp" />
-    <ClCompile Include="tests\inventory_script_tests.cpp" />
     <ClCompile Include="memory_range.cpp" />
     <ClCompile Include="mod_index.cpp" />
     <ClCompile Include="native_texture.cpp" />
@@ -98,6 +98,7 @@
     <ClCompile Include="sha256.cpp" />
     <ClCompile Include="signature_scan.cpp" />
     <ClCompile Include="tests\offline_tests.cpp" />
+    <ClCompile Include="tests\animation_tests.cpp" />
     <ClCompile Include="tests\model_tests.cpp" />
     <ClCompile Include="tests\texture_tests.cpp" />
     <ClCompile Include="virtual_path.cpp" />

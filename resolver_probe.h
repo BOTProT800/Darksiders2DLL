@@ -1,5 +1,6 @@
 #pragma once
 
+#include "animation_candidate.h"
 #include "byte_storage.h"
 #include "model_candidate.h"
 #include "loader_features.h"
@@ -45,6 +46,7 @@ enum class ResolverProbeState {
 
 enum class ResolverProbeEventKind {
     model_read,
+    animation_read,
     stream_first_entry,
     package_segment_read,
     stream_sample,
@@ -98,6 +100,10 @@ struct ResolverProbeEvent final {
     bool model_write_verified{};
     std::uint32_t model_offset{};
     std::uint32_t model_write_error{};
+    // Observation only: animation reads are hashed and matched, never written.
+    bool animation_range_matched{};
+    bool animation_range_changed{};
+    std::uint32_t animation_offset{};
     std::uint16_t frame_count{};
     std::array<std::uintptr_t, kResolverProbeMaxFrames> frames{};
     std::uint32_t sample_size{};
@@ -129,6 +135,7 @@ struct ResolverProbeStatus final {
 
 struct ResolverProbeStats final {
     std::uint64_t model_reads{}, model_matches{}, model_write_attempts{}, model_writes{}, model_failures{};
+    std::uint64_t animation_reads{}, animation_matches{};
     std::uint64_t read_file_calls{};
     std::uint64_t package_segment_reads{};
     std::uint64_t target_sized_stream_reads{};
@@ -178,7 +185,8 @@ void SetResolverProbeEventCallback(
     std::shared_ptr<const GeneralDdsCandidateSnapshot> general_candidates,
     bool write_enabled = true,
     std::shared_ptr<const ModelCandidateSnapshot> model_candidates = {},
-    bool model_write_enabled = false) noexcept;
+    bool model_write_enabled = false,
+    std::shared_ptr<const AnimationCandidateSnapshot> animation_candidates = {}) noexcept;
 
 [[nodiscard]] bool TryPopResolverProbeEvent(
     ResolverProbeEvent& event) noexcept;

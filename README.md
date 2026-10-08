@@ -1,11 +1,22 @@
 # Darksiders2DLL
 
-**Código actual: 0.7.0-inventory-trial.** Admite mods de `media/scripts.obsp`
-limitados a los siete valores `NumSlots`, con validación completa del original,
-identidad de archivo y apertura de una copia del mod. Se activa con
-`scripts=inventory`; por defecto está apagado. Incluye generador y comprobador
-offline. [Uso y límites](distribution/INVENTARIO.md).
-La capacidad y las partidas aún requieren validación en el juego.
+**Código actual: 0.8.1-deletion-trial.** Con `models=override_shape`, un `.2`
+exportado por Anansi con vértices o caras borrados en mallas con piel se
+reexpande al tamaño original: los triángulos borrados se colapsan en su sitio y
+el motor recibe sus lecturas con los tamaños de siempre. Se confirmó en el juego
+con `death_head.2` ([evidencia](research/MODEL_TRIAL.md)).
+
+**0.8.0-animation-trial.** Añade la observación de animaciones
+`.anm` (`animations=observe`, apagada por defecto). Valida ediciones del mismo
+tamaño (`keys_in_place`) contra `media.upak` y registra qué lecturas del motor
+coinciden con cada clip, **sin sustituir ninguna animación**. La observación en
+el juego está pendiente. [Guía de la prueba](distribution/ANIMACIONES_PRUEBA.md),
+[plan](PLAN_ANIMACIONES.md) y [evidencia](research/ANIMATION_TRIAL.md).
+
+**Inventario (0.7.0-inventory-trial): retirado.** El mod de `NumSlots` en
+`media/scripts.obsp` se abandonó. La DLL ya no lee ni redirige ese archivo, y
+una línea `scripts=` en el INI ahora es un ajuste desconocido que desactiva el
+cargador: bórrala si la añadiste.
 
 **Texturas: 0.6.0-texture-trial.** Añade reemplazos DDS de resolución
 variable y PNG (incluidos rectangulares) mediante la creación nativa de texturas
@@ -113,6 +124,8 @@ Desde PowerShell con ejecución permitida para estos scripts revisados:
 opcionalmente, `-GameDirectory` y `-AssetSource` para comprobaciones adicionales
 de lectura sobre la instalación y el DDS de regresión. No despliega ni lanza el
 juego. Produce builds independientes y evidencia en `build/validation-release-0.4`.
+Tras un PASS borra los intermedios de compilación (`obj\` y `.ilk`) y conserva
+los binarios de `out\`, los logs y `VALIDACION.json`.
 
 La matriz ejecuta pruebas Debug y Release del escritor real dentro del proceso
 de pruebas, pruebas de observación sin escrituras, dos builds Release que deben

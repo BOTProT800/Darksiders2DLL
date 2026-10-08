@@ -121,6 +121,8 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="animation_candidate.h" />
+    <ClInclude Include="animation_validation.h" />
     <ClInclude Include="asset_hook.h" />
     <ClInclude Include="bootstrap.h" />
     <ClInclude Include="byte_storage.h" />
@@ -130,8 +132,6 @@
     <ClInclude Include="general_dds_candidate.h" />
     <ClInclude Include="logging.h" />
     <ClInclude Include="loader_config.h" />
-    <ClInclude Include="inventory_script.h" />
-    <ClInclude Include="inventory_script_hook.h" />
     <ClInclude Include="loader_features.h" />
     <ClInclude Include="memory_range.h" />
     <ClInclude Include="mod_index.h" />
@@ -152,6 +152,8 @@
     <ClInclude Include="virtual_path.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="animation_candidate.cpp" />
+    <ClCompile Include="animation_validation.cpp" />
     <ClCompile Include="bootstrap.cpp" />
     <ClCompile Include="byte_storage.cpp" />
     <ClCompile Include="dds_validation.cpp" />
@@ -160,8 +162,6 @@
     <ClCompile Include="general_dds_candidate.cpp" />
     <ClCompile Include="logging.cpp" />
     <ClCompile Include="loader_config.cpp" />
-    <ClCompile Include="inventory_script.cpp" />
-    <ClCompile Include="inventory_script_hook.cpp" />
     <ClCompile Include="memory_range.cpp" />
     <ClCompile Include="mod_index.cpp" />
     <ClCompile Include="native_texture.cpp" />

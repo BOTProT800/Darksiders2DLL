@@ -1,7 +1,8 @@
 #include "byte_storage.h"
+#include "animation_tests.h"
+#include "animation_candidate.h"
 #include "model_tests.h"
 #include "texture_tests.h"
-#include "inventory_script_tests.h"
 #include "native_texture.h"
 #include "model_candidate.h"
 #include "package_member_bytes.h"
@@ -1173,6 +1174,66 @@ void TestPackageModels(const std::filesystem::path& root) {
     std::cout << "model_package: PASS (single/block streams, identity, native join, budgets, checksum, extent)\n";
 }
 
+void TestPackageAnimations(const std::filesystem::path& root) {
+    constexpr std::uint64_t base = 0x100;
+    const auto game = root / L"animation-package-game", mods = root / L"animation-package-mods";
+    std::filesystem::create_directories(game / L"media");
+    std::filesystem::create_directories(mods / L"clip_demo/media/ui/fixture");
+    const auto fixture = MakeTestAnimation();
+    auto second = fixture.bytes;
+    second[fixture.unit_residuals] = std::byte{3};  // a distinct valid original
+    const std::array originals{fixture.bytes, second};
+    auto edited = second;
+    edited[fixture.unit_residuals + 1] = std::byte{5};
+    auto obpk = MakeSyntheticDdsStreamObpk(originals, 8);
+    const auto write_package = [&] {
+        std::vector<std::byte> bytes(base);
+        bytes.insert(bytes.end(), obpk.bytes.begin(), obpk.bytes.end());
+        WriteBytes(game / L"media/media.upak", bytes);
+    };
+    write_package();
+    WriteBytes(game / L"media/manifest.bin", MakeSyntheticManifest(base));
+    const auto first_path = mods / L"clip_demo/media/ui/fixture/first.anm";
+    WriteBytes(first_path, fixture.bytes);
+    WriteBytes(mods / L"clip_demo/media/ui/fixture/second.anm", edited);
+    ModIndexOptions options; options.dds_only = true; options.include_animations = true;
+    const auto candidates_for = [&] {
+        const auto indexed = BuildModIndex(mods, options);
+        Require(indexed && indexed.snapshot->Assets().size() == 2, "packaged animation fixture indexing failed");
+        return BuildAnimationCandidates(game, *indexed.snapshot);
+    };
+    const auto candidates = candidates_for();
+    Require(candidates.snapshot && candidates.error.empty() && candidates.issues.empty() &&
+            candidates.snapshot->entries.size() == 2, "native animation package join failed");
+    for (const auto& entry : candidates.snapshot->entries) {
+        const bool changed = entry.virtual_path.key.ends_with(L"second.anm");
+        Require(entry.changed_tracks == (changed ? 1u : 0u) &&
+                (entry.ranges[0].original_hash != entry.ranges[0].replacement_hash) == changed,
+                "packaged animation candidate hashes wrong");
+    }
+    // Structure is judged against the recovered original, not the mod file.
+    auto structural = fixture.bytes;
+    structural[fixture.later_times.front()] = std::byte{9};
+    WriteBytes(first_path, structural);
+    const auto rejected = candidates_for();
+    Require(rejected.snapshot && rejected.snapshot->entries.size() == 1 && rejected.issues.size() == 1,
+            "structural animation edit became a candidate");
+    WriteBytes(first_path, fixture.bytes);
+    obpk = MakeSyntheticDdsStreamObpk(originals, 2); write_package();
+    const auto wrong_type = candidates_for();
+    Require((!wrong_type.snapshot || wrong_type.snapshot->entries.empty()) &&
+            (!wrong_type.issues.empty() || !wrong_type.error.empty()),
+            "non-animation member became a candidate");
+    obpk = MakeSyntheticDdsStreamObpk(originals, 8); obpk.bytes.back() ^= std::byte{1}; write_package();
+    const auto corrupt = candidates_for();
+    Require(!corrupt.snapshot && !corrupt.error.empty(), "corrupt animation original became a candidate");
+    obpk = MakeSyntheticModelBlocks(originals); write_package();
+    const auto blocks = candidates_for();
+    Require((!blocks.snapshot || blocks.snapshot->entries.empty()) &&
+            (!blocks.issues.empty() || !blocks.error.empty()), "per-member block animation accepted");
+    std::cout << "animation_package: PASS (type 8 join, value/structure edits, wrong type, checksum, block layout)\n";
+}
+
 void TestPackageDdsContractCatalog(const std::filesystem::path& root) {
     constexpr std::uint64_t segment_offset = 0x100;
     const auto game = root / L"package-dds-contract-game";
@@ -2042,7 +2103,8 @@ void TestLoaderConfig(const std::filesystem::path& root) {
             "valid CRLF config rejected");
     for (const auto invalid : {"", "mode=override", "[other]", "[loader]\npath=..",
          "[loader]\nenabled=1", "[loader]\nmode=anything", "[loader]\nmode=observe\nmode=override",
-         "[loader]\n[loader]", "[loader]\nenabled=true\nenabled=false"}) {
+         "[loader]\n[loader]", "[loader]\nenabled=true\nenabled=false",
+         "[loader]\nscripts=off", "[loader]\nscripts=inventory"}) {
         Require(!ParseLoaderConfig(invalid).valid, "invalid config accepted");
     }
     Require(!ParseLoaderConfig(std::string(16385, ' ')).valid, "oversized config accepted");
@@ -2053,8 +2115,9 @@ void TestLoaderConfig(const std::filesystem::path& root) {
 
     // Shipping indexing ignores executable/non-DDS data, including huge files.
     const auto mods = root / L"dds-only-mods";
-    std::filesystem::create_directories(mods / L"arbitrary_mod");
+    std::filesystem::create_directories(mods / L"arbitrary_mod" / L"media");
     WriteBytes(mods / L"arbitrary_mod" / L"plugin.dll", nul);
+    WriteBytes(mods / L"arbitrary_mod" / L"media" / L"scripts.obsp", nul);
     ModIndexOptions options;
     options.dds_only = true;
     const auto built = BuildModIndex(mods, options);
@@ -2066,18 +2129,28 @@ void TestLoaderConfig(const std::filesystem::path& root) {
 
 int wmain(const int argc, wchar_t** argv) {
     try {
-        if (argc == 4 && std::wstring_view(argv[1]) == L"--inventory-check")
-            return CheckInventoryScriptMod(argv[2], argv[3]);
         if (argc == 3 && std::wstring_view(argv[1]) == L"--texture-check")
             return CheckTextureFiles(argv[2]);
         if (argc == 4 && std::wstring_view(argv[1]) == L"--texture-catalog")
             return CheckTextureCatalog(argv[2], argv[3]);
+        if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--anim-")) {
+            if (argc == 4 && std::wstring_view(argv[1]) == L"--anim-check")
+                return CheckAnimationFiles(argv[2], argv[3]);
+            if (argc == 4 && std::wstring_view(argv[1]) == L"--anim-catalog")
+                return CheckAnimationCatalog(argv[2], argv[3]);
+            if ((argc == 3 || argc == 4) && std::wstring_view(argv[1]) == L"--anim-corpus")
+                return ScanAnimationCorpus(argv[2], argc == 4 ? std::filesystem::path(argv[3]) : std::filesystem::path{});
+            std::cerr << "Usage: offline_tests --anim-check ORIGINAL.anm MODIFIED.anm\n"
+                         "       offline_tests --anim-catalog GAME_DIRECTORY MODS_DIRECTORY\n"
+                         "       offline_tests --anim-corpus EXTRACTED_DIRECTORY [REPORT.tsv]\n";
+            return 2;
+        }
         if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--model-")) {
-            if (argc == 4 && std::wstring_view(argv[1]) == L"--model-check")
-                return CheckModelFiles(argv[2], argv[3]);
+            if ((argc == 4 || argc == 5) && std::wstring_view(argv[1]) == L"--model-check")
+                return CheckModelFiles(argv[2], argv[3], argc == 5 ? argv[4] : L"");
             if (argc == 4 && std::wstring_view(argv[1]) == L"--model-catalog")
                 return CheckModelCatalog(argv[2], argv[3]);
-            std::cerr << "Usage: offline_tests --model-check ORIGINAL.2 MODIFIED.2\n"
+            std::cerr << "Usage: offline_tests --model-check ORIGINAL.2 MODIFIED.2 [EXPANDED.2]\n"
                          "       offline_tests --model-catalog GAME_DIRECTORY MODS_DIRECTORY\n";
             return 2;
         }
@@ -2093,12 +2166,13 @@ int wmain(const int argc, wchar_t** argv) {
         TestPackageIdentityCatalog(temporary.Path());
         TestPackageDdsContractCatalog(temporary.Path());
         TestPackageModels(temporary.Path());
+        TestPackageAnimations(temporary.Path());
         TestLogger(temporary.Path());
         TestLoaderConfig(temporary.Path());
-        TestInventoryScripts(temporary.Path());
         TestModIndex(temporary.Path());
         TestGeneralDdsCandidates(temporary.Path());
         TestModels(temporary.Path());
+        TestAnimations(temporary.Path());
         TestByteStorageContainment(temporary.Path());
         TestModIndexLimits(temporary.Path());
         TestCanonicalModIdCollision(temporary.Path());

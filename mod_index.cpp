@@ -246,7 +246,7 @@ bool IndexMod(
                     }
                 } else if (!directory && (!options.dds_only || png || EndsWithDds(normalized.path->key) ||
                     (options.include_native_models && normalized.path->key.ends_with(L".2")) ||
-                    (options.include_inventory_scripts && normalized.path->key == L"media/scripts.obsp"))) {
+                    (options.include_animations && normalized.path->key.ends_with(L".anm")))) {
                     const bool regular = iterator->is_regular_file(type_error);
                     if (type_error || !regular) {
                         AddIssue(result, options.max_issue_count, ModIndexIssueCode::not_regular_file, mod.id, entry_path,

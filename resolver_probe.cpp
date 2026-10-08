@@ -111,6 +111,9 @@ std::shared_ptr<const ModelCandidateSnapshot> g_model_candidates_owner;
 std::atomic<const ModelCandidateSnapshot*> g_model_candidates{};
 std::atomic<bool> g_model_write_enabled{};
 std::atomic<std::uint64_t> g_model_reads{}, g_model_matches{}, g_model_write_attempts{}, g_model_writes{}, g_model_failures{};
+std::shared_ptr<const AnimationCandidateSnapshot> g_animation_candidates_owner;
+std::atomic<const AnimationCandidateSnapshot*> g_animation_candidates{};
+std::atomic<std::uint64_t> g_animation_reads{}, g_animation_matches{};
 #if defined(DS2_GENERAL_DDS_ENABLED)
 std::shared_ptr<const GeneralDdsCandidateSnapshot> g_general_candidates_owner;
 std::atomic<const GeneralDdsCandidateSnapshot*> g_general_candidates{};
@@ -692,6 +695,48 @@ void ObserveModelRead(const ResourceIdentitySample& sample, void* destination,
     PublishEventSlot(*slot, ResolverProbeEventKind::model_read);
 }
 
+// Observation only. Any complete read of a candidate member up to the clip's
+// size is hashed, so unmatched reads still identify the range the engine asks
+// for. The destination is only read; this path has no write branch.
+void ObserveAnimationRead(const ResourceIdentitySample& sample, void* destination,
+                          const std::int32_t requested, const std::int32_t returned,
+                          const DWORD result_error) noexcept {
+    if (!IsResourceIdentitySampleUsable(sample, kExpectedResourceIdentityOuterReturnRva,
+                                        kExpectedResourceReadReturnRva)) return;
+    const auto* snapshot = g_animation_candidates.load(std::memory_order_acquire);
+    if (!snapshot) return;
+    const PackageResourceIdentity identity{sample.scope.package_base,
+        static_cast<std::uint32_t>(sample.scope.member_table_offset), sample.read.member_ordinal};
+    const auto* candidate = snapshot->Find(identity);
+    if (!candidate || !candidate->storage) return;
+    g_animation_reads.fetch_add(1, std::memory_order_relaxed);
+    Sha256Digest source{};
+    bool hash_valid = false;
+    const AnimationRange* range = nullptr;
+    if (requested > 0 && requested == returned && destination &&
+        static_cast<std::size_t>(requested) <= candidate->storage->Size()) {
+        hash_valid = TryHashProcessMemory(destination, static_cast<std::size_t>(requested), source);
+        if (hash_valid) range = MatchAnimationRange(*candidate, static_cast<std::uint32_t>(requested), source);
+    }
+    if (range) g_animation_matches.fetch_add(1, std::memory_order_relaxed);
+    auto* slot = ClaimEventSlot();
+    if (!slot) return;
+    ResolverProbeEvent event{};
+    event.kind = ResolverProbeEventKind::animation_read;
+    event.resource_identity = sample;
+    event.resource_identity.read.hash_valid = hash_valid;
+    event.resource_identity.read.sha256 = source;
+    event.requested = requested;
+    event.returned = returned;
+    event.win32_error = result_error;
+    event.animation_range_matched = range != nullptr;
+    event.animation_range_changed = range && range->original_hash != range->replacement_hash;
+    event.animation_offset = range ? range->offset : 0;
+    CaptureEventContext(event);
+    slot->event = event;
+    PublishEventSlot(*slot, ResolverProbeEventKind::animation_read);
+}
+
 void ObserveGeneralDdsDryRun(
     const ResourceIdentitySample& sample,
     void* const destination,
@@ -943,6 +988,7 @@ __declspec(noinline) std::int32_t HookStreamRead(
     if (identity_correlated) {
         ObserveNativeTextureRead(identity_sample, destination, byte_count, result);
         ObserveModelRead(identity_sample, destination, byte_count, result, result_error);
+        ObserveAnimationRead(identity_sample, destination, byte_count, result, result_error);
         ObserveGeneralDdsDryRun(
             identity_sample,
             destination,
@@ -1020,7 +1066,8 @@ bool InitializeResolverProbe(
     std::shared_ptr<const GeneralDdsCandidateSnapshot> general_candidates,
     const bool write_enabled,
     std::shared_ptr<const ModelCandidateSnapshot> model_candidates,
-    const bool model_write_enabled) noexcept {
+    const bool model_write_enabled,
+    std::shared_ptr<const AnimationCandidateSnapshot> animation_candidates) noexcept {
     std::scoped_lock lock(g_lifecycle_mutex);
     const ResolverProbeState current = g_state.load(std::memory_order_acquire);
     if (current == ResolverProbeState::active) {
@@ -1037,7 +1084,8 @@ bool InitializeResolverProbe(
         return false;
     }
     if ((!general_candidates || general_candidates->Entries().empty()) &&
-        (!model_candidates || model_candidates->entries.empty())) {
+        (!model_candidates || model_candidates->entries.empty()) &&
+        (!animation_candidates || animation_candidates->entries.empty())) {
         g_state.store(ResolverProbeState::invalid_replacement, std::memory_order_release);
         return false;
     }
@@ -1046,6 +1094,8 @@ bool InitializeResolverProbe(
     g_model_candidates_owner = std::move(model_candidates);
     g_model_candidates.store(g_model_candidates_owner.get(), std::memory_order_release);
     g_model_write_enabled.store(model_write_enabled, std::memory_order_release);
+    g_animation_candidates_owner = std::move(animation_candidates);
+    g_animation_candidates.store(g_animation_candidates_owner.get(), std::memory_order_release);
     // Publish ownership before activation, but permission only after ALL hooks succeed.
     g_writer_enabled.store(false, std::memory_order_release);
 
@@ -1371,6 +1421,8 @@ ResolverProbeStats GetResolverProbeStats() noexcept {
     stats.model_write_attempts = g_model_write_attempts.load(std::memory_order_relaxed);
     stats.model_writes = g_model_writes.load(std::memory_order_relaxed);
     stats.model_failures = g_model_failures.load(std::memory_order_relaxed);
+    stats.animation_reads = g_animation_reads.load(std::memory_order_relaxed);
+    stats.animation_matches = g_animation_matches.load(std::memory_order_relaxed);
     stats.read_file_calls = g_read_file_calls.load(std::memory_order_relaxed);
     stats.package_segment_reads =
         g_package_segment_reads.load(std::memory_order_relaxed);

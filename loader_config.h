@@ -5,13 +5,15 @@
 
 namespace ds2::modding {
 enum class ModelMode { off, observe, override_positions, override_shape };
-enum class ScriptMode { off, observe, inventory };
+// Observation only: every mode other than off hashes and matches the engine's
+// reads of candidate members. No build writes animation bytes yet.
+enum class AnimationMode { off, observe, override_keys };
 struct LoaderConfig final {
     bool enabled{true};
     bool write_enabled{true};
     bool native_textures{true};
     ModelMode models{ModelMode::off};
-    ScriptMode scripts{ScriptMode::off};
+    AnimationMode animations{AnimationMode::off};
 };
 struct LoaderConfigResult final {
     LoaderConfig config;

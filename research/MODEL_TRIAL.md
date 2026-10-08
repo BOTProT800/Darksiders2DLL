@@ -1,5 +1,80 @@
 # Modelos: contrato experimental 0.5.1-shape-trial
 
+## Borrado de vértices: 0.8.1-deletion-trial, 7 de octubre de 2026
+
+El exportador de Anansi (commit `9dd6a35`, addon 1.3.0, `native.prune_dcm`) ya
+permite borrar vértices y caras de mallas con piel. Produce un `.2` **más
+pequeño**: copia íntegros los registros que sobreviven y recalcula los recuentos,
+los tramos de material y los offsets de las mallas posteriores. El motor no
+puede recibirlo tal cual. Lee el miembro con los tamaños del original empaquetado:
+la sesión del 16 de septiembre registró 21 lecturas, cuya suma más 8 bytes de
+prefijo por malla da exactamente los 148.961 bytes. Entregar menos bytes
+desajustaría ese stream único.
+
+**Solución: reexpansión en la DLL.** `ExpandModelDeletion` reconstruye el borrado
+con el layout original. La cabecera y los recuentos siguen siendo los originales.
+Cada triángulo que sobrevive se busca, en orden, entre los originales, y sus
+vértices vuelven a su ranura. El emparejamiento compara UV, pesos, huesos y los
+campos +0/+16, porque posición, normal y tangente pueden haberse editado. Los
+triángulos borrados quedan en su sitio como `(a,a,a)`, con área cero, y los
+registros sin referencia conservan los bytes originales. El resultado dibuja los
+mismos triángulos con los mismos datos que el archivo podado. Después se valida
+con `bounded_shape`, que ahora admite ese colapso en el búfer de índices:
+`a` debe ser uno de los índices del triángulo original, y la regla no se aplica a
+`override_positions`. Se rechaza todo lo demás: mallas estáticas, materiales sin
+nombre, cajas, huesos o materiales cambiados, triángulos reordenados o nuevos y
+vértices sin triángulo. El candidato añade un rango por búfer de índices, que el
+motor lee aparte, tras su prefijo de 8 bytes.
+
+**Edición del usuario:** `death_head.2` sin la parte inferior de la máscara. La
+malla 3 pasa de 432 a 383 vértices y de 732 a 656 triángulos; las otras tres
+mallas son idénticas. El archivo podado mide 143.997 bytes, con SHA-256
+`45F4A0F9B237D9FC3DE2C1460E2C6EC1F3135BCE3CD4BCD4A530FF04A9F93629`. La
+reexpansión mide 148.961 bytes, con SHA-256
+`E789666660451FC28EB2049FF9BF85EF9B20F2BE4C85082F317EA7585FED7110`, y solo cambia
+el rango `(104825, 4392)`. Un script aparte relee ambos archivos con el parser de
+Anansi: los triángulos visibles de la reexpansión coinciden uno a uno con los del
+archivo podado en posiciones, UV, normales, pesos y huesos, y las submallas y las
+cajas son las originales.
+
+**Pruebas:** fixtures sintéticos (colapso en su sitio, borrado combinado con
+movimiento, reordenación, UV, peso, cajas y tamaño no menor), candidato y detour
+real con rangos de índices. En un muestreo de 400 borrados aleatorios por zonas,
+hechos con `prune_dcm` sobre modelos del corpus extraído, la DLL aceptó 387 y su
+geometría dibujada coincidió siempre. Rechazó 13 de forma segura: 11 por el límite
+de recuento del parser (`count`), uno por un emparejamiento no encontrado
+(`mosswarden_mesh_base.2`) y uno por una base de tangentes del original fuera de
+tolerancia. Esos casos quedan pendientes y no afectan a esta edición.
+
+**Juego:** se instaló la DLL Release
+`B8E069C579AD520570EB6FE365A25B0DFA55C6F25F69096840BC0CFA3C995F2A` con
+`models=override_shape`. El respaldo de la 0.8.0, el INI y el mod está en
+`build/deletion-trial/installation-backup`. La sesión
+`Darksiders2DLL-20261008-044815-5004-000.log` registró:
+
+- `MODEL_CANDIDATE ... deletion_expanded=true mod_bytes=143997 removed_vertices=49 removed_triangles=76`.
+- 21 lecturas del miembro 187 y 8 coincidencias (los cuatro búferes de índices
+  y los cuatro de vértices, en los offsets previstos).
+- Lectura 429: `MODEL_OVERRIDE_HIT requested=4392 offset=104825` con
+  `replacement_written=true replacement_verified=true`, error 0.
+- Un intento, una escritura, cero fallos y cero eventos perdidos.
+
+La metadata de los `.upak` no cambió. El usuario confirmó que el juego carga el
+modelo con los vértices borrados sin fallar. La evidencia está en
+`build/deletion-trial` (`override.log` e `integration-state.json`).
+
+**Verificación:** `scripts/verify_release.ps1 -EvidenceName validation-deletion-trial`,
+con `-GameDirectory` y `-ModelModsDirectory build/deletion-trial/mods`, dio PASS
+en sus 20 comprobaciones: matriz Debug/Release/observación con catálogo real,
+dos Release idénticas, smoke tests de las tres DLL, endurecimiento PE e
+instalación y `.upak` sin cambios. La Release reproducible tiene el mismo SHA-256
+que la DLL probada en el juego.
+
+**Alcance:** borrado en mallas con piel de este modelo, en una sesión. No se han
+evaluado la estabilidad prolongada, otros modelos ni la adición de vértices. Añadir vértices
+sigue necesitando cambiar el tamaño, que es la investigación pendiente del
+«nivel 2».
+
 ## Integración con ANANSI, 16 de septiembre de 2026
 
 El contrato `bounded_shape` añade al XYZ las normales en +20, duplicado normal.z

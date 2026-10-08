@@ -12,8 +12,10 @@ struct ModelCandidate final {
     PackageResourceIdentity identity;
     CanonicalVirtualPath virtual_path;
     std::wstring mod_id;
-    std::shared_ptr<const ByteStorage> storage;
+    std::shared_ptr<const ByteStorage> storage; // original layout, also after a deletion
     std::vector<ModelRange> ranges;
+    std::uint64_t mod_bytes{};
+    std::uint32_t removed_vertices{}, removed_triangles{};
 };
 struct ModelCandidateSnapshot final {
     std::vector<ModelCandidate> entries;

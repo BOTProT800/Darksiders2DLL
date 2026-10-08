@@ -5,7 +5,8 @@ param(
     [string]$GameDirectory = '',
     [string]$AssetSource = '',
     [string]$ModelModsDirectory = '',
-    [string]$InventoryModsDirectory = '',
+    [string]$AnimationModsDirectory = '',
+    [string]$AnimationCorpusDirectory = '',
     [ValidatePattern('^[A-Za-z0-9.-]+$')]
     [string]$EvidenceName = 'validation-release-0.4'
 )
@@ -18,6 +19,7 @@ $versionMatch = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'boots
 if (!$versionMatch.Success) { throw 'No se pudo identificar la version del binario.' }
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $checks = [System.Collections.Generic.List[string]]::new()
+$builds = [System.Collections.Generic.List[string]]::new()
 function Build([string]$Name, [string]$Project, [string]$Configuration, [string[]]$Properties = @()) {
     $out = (Join-Path $evidence "$Name\out").Replace('\','/') + '/'
     $obj = (Join-Path $evidence "$Name\obj").Replace('\','/') + '/'
@@ -31,6 +33,7 @@ function Build([string]$Name, [string]$Project, [string]$Configuration, [string[
     & $env:ComSpec /d /s /c $command | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Compilacion fallida: $Name" }
     $checks.Add("build:$Name")
+    $builds.Add($Name)
     return $out
 }
 function Run([string]$Name, [string]$Exe, [string[]]$Arguments = @()) {
@@ -59,9 +62,12 @@ foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release'
         if (!$GameDirectory) { throw 'ModelModsDirectory requiere GameDirectory.' }
         Run "$($test[0])-models" (Join-Path $dir 'offline_tests.exe') @('--model-catalog', $GameDirectory, $ModelModsDirectory)
     }
-    if ($InventoryModsDirectory) {
-        if (!$GameDirectory) { throw 'InventoryModsDirectory requiere GameDirectory.' }
-        Run "$($test[0])-inventory" (Join-Path $dir 'offline_tests.exe') @('--inventory-check', $GameDirectory, $InventoryModsDirectory)
+    if ($AnimationModsDirectory) {
+        if (!$GameDirectory) { throw 'AnimationModsDirectory requiere GameDirectory.' }
+        Run "$($test[0])-animations" (Join-Path $dir 'offline_tests.exe') @('--anim-catalog', $GameDirectory, $AnimationModsDirectory)
+    }
+    if ($AnimationCorpusDirectory) {
+        Run "$($test[0])-animation-corpus" (Join-Path $dir 'offline_tests.exe') @('--anim-corpus', $AnimationCorpusDirectory)
     }
 }
 $a = Build 'release-a' 'Darksiders2DLL.vcxproj' 'Release'
@@ -103,4 +109,11 @@ $result = @{status='PASS'; version=$versionMatch.Groups[1].Value; utc=[DateTime]
     reproducible=$true; dllCharacteristics=('0x{0:X4}' -f $characteristics); checks=@($checks.ToArray());
     sources=$sourceHashes; inGameValidated=$false }
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence 'VALIDACION.json') -Encoding UTF8
+# obj\ y .ilk solo sirven para recompilar: tras el PASS la evidencia es out\, los logs y VALIDACION.json.
+foreach ($build in $builds) {
+    try {
+        Remove-Item -LiteralPath (Join-Path $evidence "$build\obj") -Recurse -Force
+        Get-ChildItem -LiteralPath (Join-Path $evidence "$build\out") -Filter '*.ilk' -File | Remove-Item -Force
+    } catch { Write-Warning ('No se pudieron borrar los intermedios de {0}: {1}' -f $build, $_.Exception.Message) }
+}
 Write-Output "PASS: $hash"

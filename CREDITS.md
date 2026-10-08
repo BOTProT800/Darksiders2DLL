@@ -9,8 +9,8 @@ format knowledge and development tools.
 
 - **MinHook 1.3.4**, by Tsuda Kageyu and contributors. Consumed through vcpkg
   and linked statically into `dinput8.dll` for runtime hooks in
-  `resolver_probe.cpp`, `native_texture.cpp` and `inventory_script_hook.cpp`
-  (also used by the historical `asset_hook.cpp`).
+  `resolver_probe.cpp` and `native_texture.cpp` (also used by the historical
+  `asset_hook.cpp`).
   License: BSD-2-Clause. MinHook includes **Hacker Disassembler Engine**, by
   Vyacheslav Patkov, whose copyright and BSD notice are also preserved in
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
@@ -49,14 +49,17 @@ is pinned in `vcpkg-configuration.json`.
   `model_validation.cpp` expresses that layout in C++ and adds strict validation
   for position-only edits. `services/darksiders/native.py` was also consulted
   for the verified normal/tangent offsets, duplicated normal Z and basis
-  constraints used by the bounded-shape trial. No Anansi executable or bundled
-  converter is shipped.
+  constraints used by the bounded-shape trial. `services/darksiders/animation.py`,
+  Anansi's own ANM v1 reader, was consulted for the clip header, track records
+  and compressed curves; `animation_validation.cpp` expresses that layout in C++
+  for the same-structure `keys_in_place` contract. No Anansi executable or
+  bundled converter is shipped.
 
 The MIT notice shared by these three local source projects is reproduced in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Their external tools and
 converters are not dependencies of this DLL. Darksiders2DLL itself, by the same
 author, is also released under the MIT License from this version onward
-(current code: 0.7.0-inventory-trial); see [LICENSE](LICENSE).
+(current code: 0.8.0-animation-trial); see [LICENSE](LICENSE).
 
 ## Earlier community research credited by those references
 
@@ -89,12 +92,6 @@ not assign them the MIT license of Anansi's own source.
 
 - **Microsoft Windows SDK, DirectInput, MSVC, and vcpkg**, used to build and
   implement the `dinput8.dll` proxy. SHA-256 uses the Windows BCrypt API.
-  The official [CreateFileW documentation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
-  was consulted on 2026-09-19 for file pins, sharing, access flags
-  and overlapped handles in the inventory script hook. Documentation only;
-  no sample implementation was copied. The OBSP slot offsets and original hash
-  were obtained independently from the user's local game installation and are
-  recorded in `research/INVENTORY_SCRIPT.md`; no game scripts are redistributed.
 - **QuickBMS/offzip**, **DS2-RE**, **Darksiders-2-DLL-Loader**, **x64dbg**, and
   **Ghidra** are listed as research tools or possible references in
   `PLAN_MAESTRO.md`. That listing alone does not establish that their code,

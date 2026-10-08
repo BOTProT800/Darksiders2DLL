@@ -12,12 +12,12 @@ std::string_view Trim(std::string_view text) {
 }
 LoaderConfigResult ParseLoaderConfig(std::string_view text) {
     LoaderConfigResult result;
-    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape, scripts=off|observe|inventory";
+    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape, animations=off|observe|override_keys";
     if (text.empty() || text.size() > 16 * 1024) return result;
     for (const unsigned char c : text) {
         if ((c < 32 && c != '\t' && c != '\r' && c != '\n') || c > 126) return result;
     }
-    bool section = false, enabled = false, mode = false, models = false, textures = false, scripts = false;
+    bool section = false, enabled = false, mode = false, models = false, textures = false, animations = false;
     while (!text.empty()) {
         const auto end = text.find('\n');
         auto line = Trim(text.substr(0, end));
@@ -52,12 +52,12 @@ LoaderConfigResult ParseLoaderConfig(std::string_view text) {
             else if (value == "override_shape") result.config.models = ModelMode::override_shape;
             else return result;
             models = true;
-        } else if (key == "scripts" && !scripts) {
-            if (value == "off") result.config.scripts = ScriptMode::off;
-            else if (value == "observe") result.config.scripts = ScriptMode::observe;
-            else if (value == "inventory") result.config.scripts = ScriptMode::inventory;
+        } else if (key == "animations" && !animations) {
+            if (value == "off") result.config.animations = AnimationMode::off;
+            else if (value == "observe") result.config.animations = AnimationMode::observe;
+            else if (value == "override_keys") result.config.animations = AnimationMode::override_keys;
             else return result;
-            scripts = true;
+            animations = true;
         } else return result;
     }
     if (!section) return result;

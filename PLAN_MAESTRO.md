@@ -1,3 +1,7 @@
+> Animaciones (2026-09-24): propuesta sin implementar en
+> [PLAN_ANIMACIONES.md](PLAN_ANIMACIONES.md). Primero un contrato de mismo
+> tamaño (`keys_in_place`), después una investigación de tamaño variable.
+>
 > Modelos (2026-09-16): 0.5.1-shape-trial acepta la cabeza exportada por ANANSI
 > con posiciones, normales y tangentes; mantiene límites, UV, pesos y topología
 > inmutables. El original extraído coincide con el miembro 187 del paquete y
