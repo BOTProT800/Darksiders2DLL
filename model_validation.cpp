@@ -30,6 +30,12 @@ struct Reader {
         if (value < 0 || value > 1'000'000) throw std::runtime_error("count");
         return static_cast<std::uint32_t>(value);
     }
+    // Offsets grow with the file (over 1 MB in large models), unlike counts.
+    std::uint32_t Offset() {
+        const std::int64_t value = Read<std::int32_t>();
+        if (value < 0 || static_cast<std::uint64_t>(value) > bytes.size()) throw std::runtime_error("offset");
+        return static_cast<std::uint32_t>(value);
+    }
 };
 float FloatAt(const std::span<const std::byte> bytes, const std::size_t offset) {
     float value{};
@@ -70,10 +76,14 @@ struct MeshFields final {
     std::vector<std::size_t> spans; // named material: i32 vertex count/start, index count/start
     bool unnamed_material{};
     std::uint64_t block{}, end{};
+    // Every material: i32 vertex count/start, index count (+ index start if named).
+    struct Material final { std::size_t counts{}; bool named{}; };
+    std::vector<Material> materials;
 };
 struct ParsedModel final {
     ModelLayout layout;
     std::vector<MeshFields> meshes;
+    std::size_t pairs_offset{}, pairs_size{}; // {i32, f32} per mesh; statics keep a vertex count
 };
 ParsedModel Parse(const std::span<const std::byte> bytes) {
     if (bytes.size() < 32 || bytes.size() > 64ull * 1024 * 1024)
@@ -98,7 +108,10 @@ ParsedModel Parse(const std::span<const std::byte> bytes) {
         vertices[i] = r.Count(true);
     }
     const auto extra = r.Count(true);
-    r.Skip(static_cast<std::size_t>(extra) * 8);
+    parsed.pairs_offset = r.cursor;
+    parsed.pairs_size = static_cast<std::size_t>(extra) * 8;
+    r.Skip(parsed.pairs_size);
+    layout.reads.push_back({0, layout.data_offset});
     std::uint64_t previous_end = layout.data_offset;
     for (std::uint32_t i = 0; i < meshes; ++i) {
         auto& fields = parsed.meshes[i];
@@ -107,7 +120,7 @@ ParsedModel Parse(const std::span<const std::byte> bytes) {
         const auto n = r.Count();
         const auto header_stride = r.Count();
         fields.relative_field = r.cursor;
-        const auto relative = r.Count();
+        const auto relative = r.Offset();
         const auto field3 = r.Count(), field4 = r.Count();
         if (kind > 1 || n == 0 || n != vertices[i] ||
             header_stride != (kind == 1 ? 64u : 60u) ||
@@ -142,6 +155,7 @@ ParsedModel Parse(const std::span<const std::byte> bytes) {
             } else {
                 fields.unnamed_material = true;
             }
+            fields.materials.push_back({r.cursor + 8, named});
             // Metadata is immutable in the replacement; retain native indices.
             r.Skip(named ? 24 : 20);
         }
@@ -159,6 +173,14 @@ ParsedModel Parse(const std::span<const std::byte> bytes) {
         layout.vertex_blocks.push_back({static_cast<std::uint32_t>(data.cursor), n * stride,
                                        n, stride, kind == 1 ? 4u : 0u,
                                        static_cast<std::uint32_t>(block + 8), indices[i]});
+        auto at = static_cast<std::uint32_t>(block + 8);
+        layout.reads.push_back({at, indices[i] * 2});
+        at += indices[i] * 2;
+        for (const std::uint32_t record : kind == 1 ? std::initializer_list<std::uint32_t>{20, 52, 16, 4}
+                                                    : std::initializer_list<std::uint32_t>{12, 64}) {
+            layout.reads.push_back({at, n * record});
+            at += n * record;
+        }
         fields.kind = kind;
         fields.vertices = n;
         fields.indices = indices[i];
@@ -196,6 +218,44 @@ bool SameImmutableRecord(const std::span<const std::byte> a, const SkinnedRecord
            same(at_a.weights + va * 16, at_b.weights + vb * 16, 16) &&
            same(at_a.joints + va * 4, at_b.joints + vb * 4, 4);
 }
+std::int64_t I32At(const std::span<const std::byte> bytes, const std::size_t offset) {
+    std::int32_t value{};
+    std::memcpy(&value, bytes.data() + offset, sizeof(value));
+    return value;
+}
+struct MaterialSpan final {
+    std::int64_t vertex_start{}, vertex_count{}, index_start{}, index_count{};
+};
+// Unnamed materials store no index start; theirs follow the previous span.
+std::vector<MaterialSpan> Spans(const std::span<const std::byte> bytes, const MeshFields& mesh) {
+    if (mesh.materials.empty()) return {{0, mesh.vertices, 0, mesh.indices}};
+    std::vector<MaterialSpan> spans;
+    std::int64_t next = 0;
+    for (const auto& material : mesh.materials) {
+        MaterialSpan span{I32At(bytes, material.counts + 4), I32At(bytes, material.counts),
+                          material.named ? I32At(bytes, material.counts + 12) : next,
+                          I32At(bytes, material.counts + 8)};
+        if (span.vertex_start < 0 || span.vertex_count < 0 || span.index_count < 0 ||
+            span.index_start < next || span.index_count % 3 != 0 || span.index_start % 3 != 0 ||
+            span.vertex_start + span.vertex_count > mesh.vertices ||
+            span.index_start + span.index_count > mesh.indices)
+            throw std::runtime_error("material span out of range or overlapping");
+        next = span.index_start + span.index_count;
+        spans.push_back(span);
+    }
+    return spans;
+}
+// Per-vertex arrays after the index buffer, as {offset, record size}.
+std::vector<std::pair<std::size_t, std::size_t>> VertexArrays(const MeshFields& mesh) {
+    std::vector<std::pair<std::size_t, std::size_t>> arrays;
+    auto at = static_cast<std::size_t>(mesh.block) + 8 + mesh.indices * 2ull;
+    for (const std::size_t record : mesh.kind == 1 ? std::initializer_list<std::size_t>{20, 52, 16, 4}
+                                                   : std::initializer_list<std::size_t>{12, 64}) {
+        arrays.emplace_back(at, record);
+        at += mesh.vertices * record;
+    }
+    return arrays;
+}
 }
 ModelValidationResult ValidateModelEdit(
     const std::span<const std::byte> original,
@@ -208,6 +268,12 @@ ModelValidationResult ValidateModelEdit(
     }
     try {
         result.layout = Parse(original).layout;
+        if (contract == ModelEditContract::unchecked) {
+            // No content rule: the engine only needs every read at its original size.
+            if (Parse(replacement).layout.reads != result.layout.reads)
+                throw std::runtime_error("replacement read sizes differ from the original");
+            return result;
+        }
         std::size_t unchanged_begin = 0;
         const auto unchanged = [&](const std::size_t end) {
             if (!std::equal(original.begin() + unchanged_begin, original.begin() + end,
@@ -375,6 +441,105 @@ ModelExpansionResult ExpandModelDeletion(const std::span<const std::byte> origin
             result.removed_vertices += o.vertices - e.vertices;
             result.removed_triangles += static_cast<std::uint32_t>(triangles_o - triangles_e);
         }
+        result.bytes = std::move(out);
+    } catch (const std::exception& error) {
+        result.bytes.clear();
+        const std::string reason = error.what();
+        result.error.assign(reason.begin(), reason.end());
+    }
+    return result;
+}
+ModelFitResult FitModelReplacement(const std::span<const std::byte> original,
+                                   const std::span<const std::byte> replacement) {
+    ModelFitResult result;
+    try {
+        const auto before = Parse(original);
+        const auto after = Parse(replacement);
+        // The engine reads the header at its original size; the counts and
+        // offsets in it then size every later read of the member.
+        const auto header_size = before.layout.data_offset;
+        if (after.layout.data_offset != header_size)
+            throw std::runtime_error("header size changed (bones/materials); the engine reads the original header size");
+        if (after.meshes.size() != before.meshes.size() || after.pairs_size != before.pairs_size)
+            throw std::runtime_error("mesh count changed");
+        std::vector<std::byte> out(original.begin(), original.end());
+        std::copy_n(replacement.begin(), header_size, out.begin());
+        std::copy_n(original.begin() + before.pairs_offset, before.pairs_size, out.begin() + after.pairs_offset);
+        for (std::size_t i = 0; i < before.meshes.size(); ++i) {
+            const auto& o = before.meshes[i];
+            const auto& e = after.meshes[i];
+            const auto mesh = "mesh " + std::to_string(i) + ": ";
+            if (e.kind != o.kind) throw std::runtime_error(mesh + "kind changed (skinned/static)");
+            if (e.materials.size() != o.materials.size())
+                throw std::runtime_error(mesh + "material count changed");
+            if (e.vertices > o.vertices || e.indices > o.indices)
+                throw std::runtime_error(mesh + std::to_string(e.vertices) + " vertices/" +
+                    std::to_string(e.indices / 3) + " triangles exceed the original " +
+                    std::to_string(o.vertices) + "/" + std::to_string(o.indices / 3) +
+                    "; a larger mesh needs other read sizes");
+            for (const auto& [from, to] : std::initializer_list<std::pair<std::size_t, std::size_t>>{
+                     {o.index_entry, e.index_entry}, {o.vertex_entry, e.vertex_entry},
+                     {o.count_field, e.count_field}, {o.relative_field, e.relative_field}})
+                std::copy_n(original.begin() + from, 4, out.begin() + to);
+            for (std::size_t k = 0; k < o.materials.size(); ++k) {
+                if (e.materials[k].named != o.materials[k].named)
+                    throw std::runtime_error(mesh + "material record kind changed");
+                std::copy_n(original.begin() + o.materials[k].counts, o.materials[k].named ? 16 : 12,
+                            out.begin() + e.materials[k].counts);
+            }
+            const auto spans_o = Spans(original, o), spans_e = Spans(replacement, e);
+            const auto indices_o = static_cast<std::size_t>(o.block) + 8;
+            const auto indices_e = static_cast<std::size_t>(e.block) + 8;
+            // Nothing original is drawn: every slot collapses, then the new triangles go in.
+            for (std::size_t t = 0; t < o.indices; t += 3) {
+                const auto a = U16At(original, indices_o + t * 2);
+                for (std::size_t k = 0; k < 3; ++k) std::memcpy(out.data() + indices_o + (t + k) * 2, &a, sizeof(a));
+            }
+            std::vector<std::int64_t> slot(e.vertices, -1), owner(o.vertices, -1);
+            std::int64_t drawn = 0;
+            for (std::size_t k = 0; k < spans_o.size(); ++k) {
+                const auto& so = spans_o[k];
+                const auto& se = spans_e[k];
+                if (se.vertex_count > so.vertex_count || se.index_count > so.index_count)
+                    throw std::runtime_error(mesh + "material " + std::to_string(k) + " is larger than the original one");
+                for (auto v = se.vertex_start; v < se.vertex_start + se.vertex_count; ++v) {
+                    const auto target = so.vertex_start + (v - se.vertex_start);
+                    auto& assigned = slot[static_cast<std::size_t>(v)];
+                    auto& taken = owner[static_cast<std::size_t>(target)];
+                    if (assigned < 0) {
+                        if (taken >= 0) throw std::runtime_error(mesh + "materials overlap in the original vertex slots");
+                        assigned = target;
+                        taken = v;
+                    } else if (assigned != target) {
+                        throw std::runtime_error(mesh + "materials share vertices at different offsets");
+                    }
+                }
+                for (std::int64_t j = 0; j < se.index_count; ++j) {
+                    const auto v = U16At(replacement, indices_e + static_cast<std::size_t>(se.index_start + j) * 2);
+                    if (v < se.vertex_start || v >= se.vertex_start + se.vertex_count)
+                        throw std::runtime_error(mesh + "a triangle uses a vertex outside its material");
+                    const auto target = static_cast<std::uint16_t>(slot[v]);
+                    std::memcpy(out.data() + indices_o + static_cast<std::size_t>(so.index_start + j) * 2,
+                                &target, sizeof(target));
+                }
+                drawn += se.index_count;
+            }
+            const auto arrays_o = VertexArrays(o), arrays_e = VertexArrays(e);
+            std::uint32_t used = 0;
+            for (std::uint32_t v = 0; v < e.vertices; ++v) {
+                if (slot[v] < 0) continue; // outside every material: never drawn
+                ++used;
+                for (std::size_t r = 0; r < arrays_o.size(); ++r) {
+                    const auto record = arrays_o[r].second;
+                    std::copy_n(replacement.begin() + arrays_e[r].first + v * record, record,
+                                out.begin() + arrays_o[r].first + static_cast<std::size_t>(slot[v]) * record);
+                }
+            }
+            result.spare_vertices += o.vertices - used;
+            result.collapsed_triangles += static_cast<std::uint32_t>((o.indices - drawn) / 3);
+        }
+        if (Parse(out).layout.reads != before.layout.reads)
+            throw std::runtime_error("fitted model does not keep the original read sizes");
         result.bytes = std::move(out);
     } catch (const std::exception& error) {
         result.bytes.clear();

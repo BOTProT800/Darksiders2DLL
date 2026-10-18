@@ -12,7 +12,7 @@ std::string_view Trim(std::string_view text) {
 }
 LoaderConfigResult ParseLoaderConfig(std::string_view text) {
     LoaderConfigResult result;
-    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape, animations=off|observe|override_keys";
+    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape|override_unchecked, animations=off|observe|override_keys";
     if (text.empty() || text.size() > 16 * 1024) return result;
     for (const unsigned char c : text) {
         if ((c < 32 && c != '\t' && c != '\r' && c != '\n') || c > 126) return result;
@@ -50,6 +50,7 @@ LoaderConfigResult ParseLoaderConfig(std::string_view text) {
             else if (value == "observe") result.config.models = ModelMode::observe;
             else if (value == "override_positions") result.config.models = ModelMode::override_positions;
             else if (value == "override_shape") result.config.models = ModelMode::override_shape;
+            else if (value == "override_unchecked") result.config.models = ModelMode::override_unchecked;
             else return result;
             models = true;
         } else if (key == "animations" && !animations) {

@@ -16,6 +16,8 @@ struct ModelCandidate final {
     std::vector<ModelRange> ranges;
     std::uint64_t mod_bytes{};
     std::uint32_t removed_vertices{}, removed_triangles{};
+    bool unchecked_fit{};
+    std::uint32_t spare_vertices{}, collapsed_triangles{};
 };
 struct ModelCandidateSnapshot final {
     std::vector<ModelCandidate> entries;

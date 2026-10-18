@@ -1,5 +1,6 @@
 #include "general_dds_candidate.h"
 #include "native_texture.h"
+#include "texture_convert.h"
 
 #include <algorithm>
 #include <limits>
@@ -192,7 +193,32 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 dds.payload_size != original_dds.payload_size ||
                 dds.expected_file_size != original_dds.expected_file_size ||
                 dds.has_dx10_header != original_dds.has_dx10_header;
-            const bool native_upload = different_contract || asset->source_is_png;
+            // A texture the original's format can hold is converted to the
+            // original contract and takes the same-size stream route, the one
+            // confirmed in game. Native upload stays as the fallback.
+            std::shared_ptr<const ByteStorage> storage = asset->storage;
+            DdsMetadata delivered = dds;
+            bool converted = false;
+            std::wstring conversion_error;
+            if ((different_contract || asset->source_is_png) && options.allow_native_upload &&
+                options.convert_to_original) {
+                auto conversion = original->header.empty()
+                    ? DdsConversionResult{{}, L"original header unavailable"}
+                    : ConvertDdsToContract(asset->storage->Bytes(), dds, original->header, original_dds);
+                if (conversion) {
+                    auto made = MakeByteStorage(std::move(conversion.bytes));
+                    if (made) {
+                        storage = std::move(made.storage);
+                        delivered = original_dds;
+                        converted = true;
+                    } else {
+                        conversion_error = L"converted storage failed";
+                    }
+                } else {
+                    conversion_error = conversion.error;
+                }
+            }
+            const bool native_upload = !converted && (different_contract || asset->source_is_png);
             if (different_contract && !options.allow_native_upload) {
                 AddIssue(
                     result, options, package_entry,
@@ -212,9 +238,9 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 continue;
             }
 
-            if (!FitsSignedReadCount(storage_size) ||
-                !FitsSignedReadCount(dds.header_size) ||
-                !FitsSignedReadCount(dds.payload_size)) {
+            if (!FitsSignedReadCount(storage->Size()) ||
+                !FitsSignedReadCount(delivered.header_size) ||
+                !FitsSignedReadCount(delivered.payload_size)) {
                 AddIssue(
                     result, options, package_entry,
                     GeneralDdsCandidateIssueCode::size_not_representable,
@@ -223,9 +249,9 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 continue;
             }
 
-            const auto replacement_payload = asset->storage->Bytes().subspan(
-                static_cast<std::size_t>(dds.header_size),
-                static_cast<std::size_t>(dds.payload_size));
+            const auto replacement_payload = storage->Bytes().subspan(
+                static_cast<std::size_t>(delivered.header_size),
+                static_cast<std::size_t>(delivered.payload_size));
             const Sha256Result replacement_payload_hash =
                 ComputeSha256(replacement_payload);
             if (!replacement_payload_hash) {
@@ -242,16 +268,19 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 package_entry.virtual_path,
                 asset->mod_id,
                 package_entry.original_size,
-                dds,
-                asset->storage,
-                static_cast<std::uint32_t>(dds.header_size),
-                static_cast<std::uint32_t>(dds.payload_size),
+                delivered,
+                storage,
+                static_cast<std::uint32_t>(delivered.header_size),
+                static_cast<std::uint32_t>(delivered.payload_size),
                 original->full_sha256,
                 original->payload_sha256,
-                asset->storage->Sha256(),
+                storage->Sha256(),
                 replacement_payload_hash.digest,
                 native_upload,
                 original_dds,
+                converted,
+                dds,
+                std::move(conversion_error),
             });
         }
 

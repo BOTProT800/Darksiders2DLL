@@ -64,7 +64,9 @@ struct PackageIdentityCatalogIssue final {
 };
 
 struct PackageIdentityCatalogOptions final {
-    bool allow_member_blocks{false}; // experimental native-model catalog only
+    // Independent-block segments (media/items/...); identity confirmed in game
+    // with ds1a01_shoulder.2 on 2026-10-17. Used by the model and DDS catalogs.
+    bool allow_member_blocks{false};
     std::uint64_t max_manifest_bytes{16ull * 1024ull * 1024ull};
     std::size_t max_requested_paths{16'384};
     std::size_t max_manifest_paths{2'000'000};

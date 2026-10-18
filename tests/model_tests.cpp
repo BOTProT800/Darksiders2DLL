@@ -125,6 +125,67 @@ void TestModelDeletion(const std::filesystem::path& temporary_root) {
     TestModelRuntime(candidate, original);
 #endif
 }
+void TestModelUncheckedFit(const std::filesystem::path& temporary_root) {
+    const auto original = MakeSkinnedModel({0, 1, 2, 3, 4}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}});
+    const auto contract = ModelEditContract::unchecked;
+    // A different mesh: new records, reversed winding and other bounds.
+    auto replacement = MakeSkinnedModel({7, 8, 9}, {{2, 1, 0}});
+    Put(replacement, 49, -1.0f);
+    const auto fitted = FitModelReplacement(original, replacement);
+    Require(bool(fitted) && fitted.spare_vertices == 2 && fitted.collapsed_triangles == 2, "new mesh not fitted");
+    // Original counts, spans and index prefix; new header content; the new
+    // triangle first and the rest collapsed over the original records.
+    auto expected = original;
+    Put(expected, 49, -1.0f);
+    const std::array<std::uint16_t, 9> indices{2, 1, 0, 1, 1, 1, 2, 2, 2};
+    for (std::size_t k = 0; k < indices.size(); ++k) Put(expected, 109 + k * 2, indices[k]);
+    for (const auto& [from, to, record] : std::array<std::array<std::size_t, 3>, 4>{
+             {{115, 127, 20}, {175, 227, 52}, {331, 487, 16}, {379, 567, 4}}})
+        std::copy_n(replacement.begin() + from, 3 * record, expected.begin() + to);
+    Require(fitted.bytes == expected, "fit must keep the original sizes and place the new mesh first");
+    Require(bool(ValidateModelEdit(original, fitted.bytes, contract)), "unchecked contract rejected a fitted mesh");
+    Require(!ValidateModelEdit(original, fitted.bytes, ModelEditContract::bounded_shape),
+            "shape contract accepted new bounds");
+
+    // Same counts: no content rule at all, the fit is the replacement itself.
+    auto same = original;
+    Put(same, 127, 5.0f);         // UV
+    Put(same, 227 + 4, 99.0f);    // position far outside the original box
+    Put(same, 487, 0.25f);        // skin weight
+    const auto identity = FitModelReplacement(original, same);
+    Require(bool(identity) && identity.bytes == same && identity.spare_vertices == 0 &&
+            identity.collapsed_triangles == 0 && bool(ValidateModelEdit(original, same, contract)),
+            "same-size replacement not accepted as is");
+
+    // Physical limits only: the engine reads the original sizes.
+    Require(!FitModelReplacement(original, MakeSkinnedModel({0, 1, 2, 3, 4, 5}, {{0, 1, 2}})),
+            "larger vertex count accepted");
+    Require(!FitModelReplacement(original, MakeSkinnedModel({0, 1, 2, 3, 4},
+                                 {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}, {0, 2, 4}})), "more triangles accepted");
+    Require(!FitModelReplacement(original, MakeTestModel(true)), "other header size accepted");
+
+    const auto mods_path = temporary_root / L"unchecked-models";
+    Write(mods_path / L"new/media/characters/fixture.2", replacement);
+    ModIndexOptions options; options.dds_only = true; options.include_native_models = true;
+    const auto mods = BuildModIndex(mods_path, options);
+    Require(mods && mods.snapshot->Assets().size() == 1, "unchecked fixture not indexed");
+    PackageIdentityEntry entry;
+    entry.identity = {0x123400, 0x40, 223};
+    entry.virtual_path = mods.snapshot->Assets().front().virtual_path;
+    entry.type_id = 2; entry.original_size = static_cast<std::uint32_t>(original.size());
+    ModelCandidate candidate; std::wstring error;
+    Require(!PrepareModelCandidate(entry, mods.snapshot->Assets().front(), original, candidate, error,
+                                   ModelEditContract::bounded_shape), "shape contract accepted a new mesh");
+    Require(PrepareModelCandidate(entry, mods.snapshot->Assets().front(), original, candidate, error, contract) &&
+            candidate.unchecked_fit && candidate.storage->Size() == original.size() &&
+            std::ranges::equal(candidate.storage->Bytes(), expected) && candidate.spare_vertices == 2 &&
+            candidate.collapsed_triangles == 2 && candidate.ranges.size() == 8, "unchecked candidate rejected");
+    for (const auto& range : candidate.ranges)
+        Require(MatchModelRange(candidate, range.size, range.original_hash) == &range, "unchecked read not identified");
+#if defined(DS2_TEST_GENERAL_RESOLVER_RUNTIME)
+    TestModelRuntime(candidate, original);
+#endif
+}
 }
 
 // One triangle; both layouts exercise the real parser and runtime writer.
@@ -239,7 +300,8 @@ void TestModels(const std::filesystem::path& temporary_root) {
         ModelCandidate candidate; std::wstring error;
         const auto contract = skinned ? ModelEditContract::bounded_shape : ModelEditContract::positions_only;
         Require(PrepareModelCandidate(entry, asset, original, candidate, error, contract), "model candidate rejected");
-        Require(candidate.ranges.size() == 4, "missing model read ranges");
+        // Full, payload, header, index buffer and every per-vertex array.
+        Require(candidate.ranges.size() == (skinned ? 8u : 6u), "missing model read ranges");
         for (const auto& range : candidate.ranges)
             Require(MatchModelRange(candidate, range.size, range.original_hash) == &range,
                     "range identity/hash matching failed");
@@ -253,8 +315,9 @@ void TestModels(const std::filesystem::path& temporary_root) {
         Require(!PrepareModelCandidate(entry, asset, original, candidate, error), "wrong model type accepted");
     }
     TestModelDeletion(temporary_root);
+    TestModelUncheckedFit(temporary_root);
     Require(ParseLoaderConfig("[loader]").config.models == ModelMode::off, "models default on");
-    for (const auto* value : {"off", "observe", "override_positions", "override_shape"}) {
+    for (const auto* value : {"off", "observe", "override_positions", "override_shape", "override_unchecked"}) {
         const auto cfg = ParseLoaderConfig(std::string("[loader]\nmodels=") + value);
         Require(cfg.valid, "model mode rejected");
     }
@@ -265,11 +328,11 @@ void TestModels(const std::filesystem::path& temporary_root) {
             shape_observe.config.models == ModelMode::override_shape, "shape global observation lost");
     for (const auto* value : {"models=override", "models=true", "models=off\nmodels=observe"})
         Require(!ParseLoaderConfig(std::string("[loader]\n") + value).valid, "invalid model config accepted");
-    std::cout << "model_validation: PASS (legacy positions, bounded shape, orthonormal basis, immutable bounds/UV/skin, deletion expansion, malformed inputs, opt-in)\n";
+    std::cout << "model_validation: PASS (legacy positions, bounded shape, orthonormal basis, immutable bounds/UV/skin, deletion expansion, unchecked fit, malformed inputs, opt-in)\n";
 }
 
 int CheckModelFiles(const std::filesystem::path& original, const std::filesystem::path& modified,
-                    const std::filesystem::path& expanded) {
+                    const std::filesystem::path& expanded, const bool unchecked) {
     using namespace ds2::modding;
     const auto before = LoadByteStorage(original, 64ull * 1024 * 1024);
     auto after = LoadByteStorage(modified, 64ull * 1024 * 1024);
@@ -279,37 +342,52 @@ int CheckModelFiles(const std::filesystem::path& original, const std::filesystem
     }
     const auto modified_hash = after.storage->Sha256Hex();
     const auto modified_size = after.storage->Size();
-    const bool deleted = modified_size < before.storage->Size();
+    const bool deleted = !unchecked && modified_size < before.storage->Size();
     ModelExpansionResult deletion;
-    if (deleted) {
+    ModelFitResult fit;
+    if (unchecked) {
+        fit = FitModelReplacement(before.storage->Bytes(), after.storage->Bytes());
+        if (!fit) { std::wcerr << L"MODEL_REJECTED: unchecked: " << fit.error << L'\n'; return 1; }
+        after = MakeByteStorage(fit.bytes);
+        if (!after) { std::wcerr << L"MODEL_CHECK_FAILED: fitted storage\n"; return 1; }
+        if (!expanded.empty()) Write(expanded, after.storage->Bytes());
+    } else if (deleted) {
         deletion = ExpandModelDeletion(before.storage->Bytes(), after.storage->Bytes());
         if (!deletion) { std::wcerr << L"MODEL_REJECTED: deletion: " << deletion.error << L'\n'; return 1; }
         after = MakeByteStorage(deletion.bytes);
         if (!after) { std::wcerr << L"MODEL_CHECK_FAILED: expanded storage\n"; return 1; }
         if (!expanded.empty()) Write(expanded, after.storage->Bytes());
     }
-    const auto result = ValidateModelEdit(before.storage->Bytes(), after.storage->Bytes(), ModelEditContract::bounded_shape);
+    const auto contract = unchecked ? ModelEditContract::unchecked : ModelEditContract::bounded_shape;
+    const auto result = ValidateModelEdit(before.storage->Bytes(), after.storage->Bytes(), contract);
     if (!result) { std::wcerr << L"MODEL_REJECTED: " << result.error << L'\n'; return 1; }
-    std::wcout << L"MODEL_CHECK_PASS contract=bounded_shape bytes=" << before.storage->Size()
+    std::wcout << L"MODEL_CHECK_PASS contract=" << (unchecked ? L"unchecked" : L"bounded_shape")
+               << L" bytes=" << before.storage->Size()
                << L" meshes=" << result.layout.vertex_blocks.size()
                << L" changed=" << (before.storage->Sha256() != after.storage->Sha256());
     if (deleted)
         std::wcout << L" deletion_expanded=true mod_bytes=" << modified_size
                    << L" removed_vertices=" << deletion.removed_vertices
                    << L" removed_triangles=" << deletion.removed_triangles;
+    if (unchecked)
+        std::wcout << L" unchecked_fit=true mod_bytes=" << modified_size
+                   << L" spare_vertices=" << fit.spare_vertices
+                   << L" collapsed_triangles=" << fit.collapsed_triangles;
     std::wcout << L"\noriginal_sha256=" << before.storage->Sha256Hex()
                << L"\nmodified_sha256=" << modified_hash;
     if (deleted) std::wcout << L"\nexpanded_sha256=" << after.storage->Sha256Hex();
+    if (unchecked) std::wcout << L"\nfitted_sha256=" << after.storage->Sha256Hex();
     std::wcout << L'\n';
     return 0;
 }
 
-int CheckModelCatalog(const std::filesystem::path& game, const std::filesystem::path& mods_path) {
+int CheckModelCatalog(const std::filesystem::path& game, const std::filesystem::path& mods_path, const bool unchecked) {
     using namespace ds2::modding;
     ModIndexOptions options; options.dds_only = true; options.include_native_models = true;
     const auto mods = BuildModIndex(mods_path, options);
     if (!mods) { std::wcerr << L"MODEL_CATALOG_FAILED: mod index\n"; return 1; }
-    const auto built = BuildModelCandidates(game, *mods.snapshot);
+    const auto built = BuildModelCandidates(game, *mods.snapshot,
+        unchecked ? ModelEditContract::unchecked : ModelEditContract::bounded_shape);
     for (const auto& issue : built.issues) std::wcerr << L"MODEL_REJECTED: " << issue << L'\n';
     if (!built.snapshot || !built.error.empty()) {
         std::wcerr << L"MODEL_CATALOG_FAILED: " << built.error << L'\n'; return 1;
@@ -324,6 +402,10 @@ int CheckModelCatalog(const std::filesystem::path& game, const std::filesystem::
             std::wcout << L" deletion_expanded=true mod_bytes=" << entry.mod_bytes
                        << L" removed_vertices=" << entry.removed_vertices
                        << L" removed_triangles=" << entry.removed_triangles;
+        if (entry.unchecked_fit)
+            std::wcout << L" unchecked_fit=true mod_bytes=" << entry.mod_bytes
+                       << L" spare_vertices=" << entry.spare_vertices
+                       << L" collapsed_triangles=" << entry.collapsed_triangles;
         std::wcout << L'\n';
         for (const auto& range : entry.ranges)
             std::wcout << L"  range offset=" << range.offset << L" size=" << range.size

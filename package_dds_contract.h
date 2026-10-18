@@ -26,6 +26,9 @@ struct PackageDdsContractEntry final {
     DdsMetadata dds;
     Sha256Digest full_sha256{};
     Sha256Digest payload_sha256{};
+    // Original header bytes, reused verbatim when a replacement is converted
+    // to this exact contract.
+    std::vector<std::byte> header;
 };
 
 enum class PackageDdsContractCatalogError {

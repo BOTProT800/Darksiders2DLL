@@ -137,6 +137,7 @@
     <ClInclude Include="mod_index.h" />
     <ClInclude Include="native_texture.h" />
     <ClInclude Include="png_texture.h" />
+    <ClInclude Include="texture_convert.h" />
     <ClInclude Include="model_candidate.h" />
     <ClInclude Include="model_validation.h" />
     <ClInclude Include="package_member_bytes.h" />
@@ -166,6 +167,7 @@
     <ClCompile Include="mod_index.cpp" />
     <ClCompile Include="native_texture.cpp" />
     <ClCompile Include="png_texture.cpp" />
+    <ClCompile Include="texture_convert.cpp" />
     <ClCompile Include="model_candidate.cpp" />
     <ClCompile Include="model_validation.cpp" />
     <ClCompile Include="package_identity_catalog.cpp" />

@@ -1,5 +1,136 @@
 # Modelos: contrato experimental 0.5.1-shape-trial
 
+## Malla nueva sin reglas de contenido: 0.9.0-unchecked-trial, 17 de octubre de 2026
+
+Objetivo del usuario: sustituir una malla por otra totalmente nueva y que la DLL
+no ponga ninguna prohibición, porque eso todavía no se ha probado en el juego.
+`models=override_unchecked` (opcional, desactivado por defecto; `mode=observe`
+sigue siendo la barrera global) elimina todas las reglas de contenido:
+posiciones fuera de la caja, normales, UV, pesos, huesos, cajas y cualquier
+correspondencia con el original.
+
+**Único límite: los tamaños de lectura.** El motor lee la cabecera con el tamaño
+original y, después, cada búfer de índices y cada array por vértice con los
+recuentos de esa cabecera. `FitModelReplacement` encaja el reemplazo en esos
+tamaños:
+
+- La cabecera sale del reemplazo (cajas, paleta de huesos, nombres de material),
+  pero conserva los recuentos, tramos, desplazamientos y la tabla de pares del
+  original.
+- Primero se colapsan todos los triángulos originales a `(a,a,a)`. Luego cada
+  material escribe sus triángulos, reindexados, al principio de su tramo
+  original, y sus vértices en las ranuras de ese tramo.
+- Las ranuras sobrantes conservan registros originales sin referencias.
+
+Se rechaza solo lo que no cabe físicamente: otro tamaño de cabecera, número de
+mallas o materiales distinto, otro tipo de malla (con piel o estática), o una
+malla o un material con más vértices o triángulos que el original. Para la
+máscara de `death_head.2` (malla 3), el hueco es de 432 vértices y 732
+triángulos. Una malla mayor necesita otros tamaños de lectura, que es el
+«nivel 2», todavía sin investigar.
+
+Para identificar cada lectura, el candidato añade un rango por cada array
+(cabecera, índices, atributos, vértices, pesos y huesos; o posiciones y atributos
+en las estáticas). En este modo se rechaza cualquier rango cambiado que sea
+ambiguo: sin reglas de contenido, saltarse una lectura mezclaría recuentos o
+paletas nuevos con arrays viejos.
+
+**Corrección del parser.** El campo `relative` es un desplazamiento y crece con el
+archivo. Se validaba como un recuento, con tope de 1.000.000, y eso rechazaba los
+modelos de más de 1 MB (`count`), entre ellos `reaper_form_ghost.2` y
+`serpent.2`. Ahora debe quedar dentro del archivo. Esto explica 11 de los 13
+rechazos del muestreo de borrados del 7 de octubre.
+
+**Pruebas:**
+- Fixtures sintéticos: malla nueva con otros registros, otro sentido de giro y
+  otra caja; mismo tamaño con UV, posición y peso libres; límites de vértices,
+  triángulos y cabecera; candidato y detour real.
+- Corpus, mallas «nuevas» derivadas de 300 modelos: borrado por zonas,
+  vértices permutados, triángulos barajados por material, posiciones fuera de la
+  caja, UV aleatorias y cajas ampliadas. Pasan 300 de 300, y en todos los
+  triángulos visibles coinciden en orden con los del reemplazo, con las mismas
+  posiciones, UV, pesos y huesos.
+- Borrado (`override_shape`) con la misma semilla que el 7 de octubre: pasan 397
+  de 400, con la geometría idéntica. Los tres rechazos restantes son reglas de
+  contenido de ese contrato estricto: dos emparejamientos no encontrados y una
+  base de tangentes del original.
+- La edición actual de `death_head.2` también encaja en el modo nuevo: 49
+  ranuras sobrantes y 76 triángulos colapsados.
+
+**Juego, 17 de octubre (0.9.0, sesión `Darksiders2DLL-20261018-000727-23376-000.log`).**
+El usuario sustituyó la hombrera `media/items/armor/ds1a01_shoulder.2` por una
+malla nueva. El original mide 92.597 bytes y el reemplazo 29.885: quedan 618
+ranuras de vértice sobrantes y 976 triángulos colapsados. El miembro 249 está en
+el segmento de bloques independientes `0xABD000`, tabla `0x19800`. Es la primera
+lectura identificada y escrita en el juego dentro de un segmento de bloques.
+La sesión registró 27 lecturas de modelo, 27 coincidencias, 9 escrituras
+verificadas y 0 fallos; la máscara de `death_head.2` también se escribió. El
+usuario confirmó que la malla nueva carga sin fallar, **pero sin sus texturas**.
+
+**Causa de las texturas: segmentos de bloques en el catálogo DDS.** Los tres DDS
+nuevos (`DS1A01_Shoulder_Diff/Norm/Spec.dds`) están en ese mismo segmento. El
+catálogo de identidades para texturas no activaba `allow_member_blocks`
+(`PACKAGE_IDENTITY_ISSUE code=unsupported_layout`), y el de contratos DDS solo
+agrupaba streams comunes, así que no hubo ningún candidato. En 0.9.1 ambos
+catálogos aceptan bloques: cada miembro es su propio stream (u32 de tamaño y
+zlib), con la misma comprobación de extensión y tamaño declarado que ya usan los
+modelos. El catálogo offline sobre la instalación da ahora tres candidatos de
+subida nativa, de 1024×1024 a 512×1024. Prueba sintética: dos DDS en bloques
+producen los mismos contratos que en un stream, y un checksum dañado se rechaza.
+
+**Juego, 0.9.1 (sesión `Darksiders2DLL-20261018-005428-23676-000.log`): sin
+texturas.** Los tres DDS se identificaron y verificaron al leerse
+(`NATIVE_TEXTURE_SOURCE_VERIFIED`), pero no apareció ningún
+`NATIVE_TEXTURE_UPLOAD_SEEN`. Se revisaron los 54 logs: el gancho nativo estuvo
+activo en 12 sesiones desde la 0.6.0 y **nunca** vio una subida por
+`0xD4E62C` desde `0x1088457`. Lo que muestra el análisis estático:
+
+- `0xD4E62C` tiene solo dos llamadores directos. `0xD7137C` genera una textura
+  propia de ruido BGRA de 1 mip, por lo que excluirlo es correcto. El otro está
+  en la tarea de recursos `0x1088148`.
+- La tarea de recursos elige la función según `[rbx]`: 1 → 2D (`0xD4E62C`),
+  2 → volumen (`0xD4F104`) y 3 → cubemap (`0xD4DD40`).
+- El analizador DDS del motor (`0xA337AC`, comprobación de `DDS ` y tamaño `0x7C`)
+  pertenece a un objeto cargador de imágenes con su propio stream y no a esa
+  tarea. Las texturas DDS usan, por tanto, un camino de creación que el gancho
+  nativo no cubre.
+
+La subida nativa (0.6.0) queda sin confirmar y, de hecho, sin uso en el juego.
+
+**0.9.2: conversión al contrato original.** Si la textura de reemplazo difiere
+del original (dimensiones, mips, formato, o PNG), `ConvertDdsToContract`:
+
+- decodifica el nivel superior (BC1/BC2/BC3/BGRA8/RGBA8/BGR8);
+- lo reescala con un filtro triangular separable (bilineal al ampliar, promedio
+  al reducir) y regenera la cadena de mips;
+- lo codifica en el formato original (ajuste por eje principal en BC, con el
+  modo transparente de BC1 si hay alfa) y usa la cabecera original byte a byte,
+  que ahora conserva el catálogo de contratos.
+
+El resultado mide exactamente lo mismo que el original y va por la copia del
+mismo tamaño en el búfer de lectura. Esa vía funcionó en el juego con la
+máscara (0.4.1) y, en este mismo segmento, con `ds1a01_shoulder.2`. La subida
+nativa queda solo como último recurso para formatos que no se pueden convertir
+(BC4/BC5) o mayores de 4096×4096. Las texturas mayores que el original se
+reducen a su tamaño: el HD sigue dependiendo de la vía nativa, sin confirmar.
+
+Texturas del usuario: las tres pasan de 512×1024 a 1024×1024 con la ruta
+`converted_stream_copy`, y sus tamaños (699.192, 699.192 y 1.398.256 bytes)
+coinciden con los originales. Comparadas con la fuente reescalada, la relación
+señal-ruido es de 39,0 dB en la difusa, 46,7 dB en la normal y 34,1 dB en la
+especular; el alfa no cambia. El catálogo completo con las tres conversiones
+tarda 0,6 s. Pruebas: BGRA → BC1 con endpoints 565 exactos en todos los mips,
+BC1 → BGRA, cabecera literal, límites, y una candidata convertida que llega al
+escritor de streams.
+
+**Juego, 0.9.2 (sesión `Darksiders2DLL-20261018-011604-23464-000.log`):
+confirmado.** Hubo tres `GENERAL_DDS_CANDIDATE route=converted_stream_copy` y,
+al cargar la hombrera, tres `GENERAL_DDS_OVERRIDE_HIT decision=payload` (miembros
+796, 1202 y 1251). Contadores: 3 candidatas coincidentes, 3 intentos y 3
+escrituras completadas, sin fallos de hash, escritura ni verificación; 9
+escrituras de modelo y 0 fallos. El usuario confirmó que la malla nueva se ve
+con sus texturas.
+
 ## Borrado de vértices: 0.8.1-deletion-trial, 7 de octubre de 2026
 
 El exportador de Anansi (commit `9dd6a35`, addon 1.3.0, `native.prune_dcm`) ya

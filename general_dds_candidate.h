@@ -36,6 +36,11 @@ struct GeneralDdsCandidate final {
     // Native uploads own their bytes; they must NEVER reach the stream writer.
     bool requires_native_upload{};
     DdsMetadata original_dds;
+    // Converted to the original contract: dds/storage describe the converted
+    // bytes and source_dds the mod file. Otherwise conversion_error says why not.
+    bool converted{};
+    DdsMetadata source_dds;
+    std::wstring conversion_error;
 };
 
 enum class GeneralDdsCandidateIssueCode {
@@ -70,6 +75,9 @@ enum class GeneralDdsCandidateError {
 struct GeneralDdsCandidateOptions final {
     std::size_t max_issue_count{1'024};
     bool allow_native_upload{false};
+    // With allow_native_upload, first convert a different texture to the
+    // original contract so it takes the same-size stream route.
+    bool convert_to_original{true};
 };
 
 struct GeneralDdsCandidateBuildResult;

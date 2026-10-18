@@ -526,8 +526,10 @@ namespace
                 if (asset.dds) requested.push_back(asset.virtual_path);
             }
 
+            ds2::modding::PackageIdentityCatalogOptions identity_options;
+            identity_options.allow_member_blocks = true;
             auto built = ds2::modding::BuildMediaPackageIdentityCatalog(
-                game_directory, requested);
+                game_directory, requested, identity_options);
             if (!built)
             {
                 std::wstring detail = L"reason=";
@@ -721,7 +723,23 @@ namespace
                 detail.append(L" member_ordinal=");
                 detail.append(std::to_wstring(
                     candidate.identity.member_ordinal));
-                detail.append(candidate.requires_native_upload ? L" route=native_upload" : L" route=stream_copy");
+                detail.append(candidate.requires_native_upload ? L" route=native_upload"
+                    : candidate.converted ? L" route=converted_stream_copy" : L" route=stream_copy");
+                if (candidate.converted) {
+                    detail.append(L" source=");
+                    detail.append(std::to_wstring(candidate.source_dds.width));
+                    detail.push_back(L'x');
+                    detail.append(std::to_wstring(candidate.source_dds.height));
+                    detail.push_back(L'/');
+                    detail.append(ds2::modding::DdsFormatName(candidate.source_dds.format));
+                    detail.append(L"/mips=");
+                    detail.append(std::to_wstring(candidate.source_dds.mip_count));
+                }
+                if (!candidate.conversion_error.empty()) {
+                    detail.append(L" conversion_error=\"");
+                    detail.append(candidate.conversion_error);
+                    detail.push_back(L'"');
+                }
                 detail.append(L" full_size=");
                 detail.append(std::to_wstring(candidate.original_size));
                 detail.append(L" payload_size=");
@@ -913,7 +931,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.8.1-deletion-trial mode=asset_loader");
+            LogEvent(L"SESSION_START", L"version=0.9.2-unchecked-trial mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";
@@ -994,6 +1012,8 @@ namespace
             if (config.config.models != ds2::modding::ModelMode::off) {
                 const auto contract = config.config.models == ds2::modding::ModelMode::override_positions
                     ? ds2::modding::ModelEditContract::positions_only
+                    : config.config.models == ds2::modding::ModelMode::override_unchecked
+                    ? ds2::modding::ModelEditContract::unchecked
                     : ds2::modding::ModelEditContract::bounded_shape;
                 const auto models = ds2::modding::BuildModelCandidates(game_directory, *snapshot, contract);
                 for (const auto& issue : models.issues) LogEvent(L"MODEL_REJECTED", issue);
@@ -1011,6 +1031,11 @@ namespace
                             detail.append(L" removed_vertices=" + std::to_wstring(candidate.removed_vertices));
                             detail.append(L" removed_triangles=" + std::to_wstring(candidate.removed_triangles));
                         }
+                        if (candidate.unchecked_fit) {
+                            detail.append(L" unchecked_fit=true mod_bytes=" + std::to_wstring(candidate.mod_bytes));
+                            detail.append(L" spare_vertices=" + std::to_wstring(candidate.spare_vertices));
+                            detail.append(L" collapsed_triangles=" + std::to_wstring(candidate.collapsed_triangles));
+                        }
                         LogEvent(L"MODEL_CANDIDATE", detail);
                     }
                     LogEvent(L"MODEL_CATALOG_READY", L"candidates=" + std::to_wstring(models.snapshot->entries.size()));
@@ -1019,7 +1044,10 @@ namespace
                 LogEvent(L"MODEL_MODE", config.config.models == ds2::modding::ModelMode::override_positions
                     ? L"override_positions (experimental)"
                     : config.config.models == ds2::modding::ModelMode::override_shape
-                    ? L"override_shape (bounded shape, experimental)" : L"observe (bounded shape, no model writes)");
+                    ? L"override_shape (bounded shape, experimental)"
+                    : config.config.models == ds2::modding::ModelMode::override_unchecked
+                    ? L"override_unchecked (no content checks, original read sizes, experimental)"
+                    : L"observe (bounded shape, no model writes)");
             }
             // Observation only: the read hook hashes and matches candidate
             // members, but this build has no animation writer.
@@ -1079,7 +1107,8 @@ namespace
                     game_directory / L"media" / L"media.upak",
                     candidates, config.config.write_enabled, model_candidates,
                     config.config.models == ds2::modding::ModelMode::override_positions ||
-                    config.config.models == ds2::modding::ModelMode::override_shape,
+                    config.config.models == ds2::modding::ModelMode::override_shape ||
+                    config.config.models == ds2::modding::ModelMode::override_unchecked,
                     animation_candidates);
                 ds2::modding::EnableNativeTextureWrites(resolver_probe_active && config.config.write_enabled);
                 const auto probe_status = ds2::modding::GetResolverProbeStatus();

@@ -178,8 +178,9 @@ SyntheticObpk MakeSyntheticNamedObpk(
     return fixture;
 }
 
-SyntheticObpk MakeSyntheticModelBlocks(const std::array<std::vector<std::byte>, 2>& members) {
-    auto fixture = MakeSyntheticNamedObpk(true, 2,
+SyntheticObpk MakeSyntheticModelBlocks(const std::array<std::vector<std::byte>, 2>& members,
+                                       const std::uint32_t type_id = 2) {
+    auto fixture = MakeSyntheticNamedObpk(true, type_id,
         {static_cast<std::uint32_t>(members[0].size()), static_cast<std::uint32_t>(members[1].size())});
     fixture.bytes.resize(fixture.payload_offset);
     for (std::size_t i = 0; i < members.size(); ++i) {
@@ -1298,6 +1299,27 @@ void TestPackageDdsContractCatalog(const std::filesystem::path& root) {
                 second->dds.expected_file_size == second_bytes.size(),
             "synthetic original DDS contract content is wrong");
 
+    // Independent blocks (media/items/...): the same contracts, member by member.
+    auto block_obpk = MakeSyntheticModelBlocks({first_bytes, second_bytes}, 6);
+    write_package(block_obpk);
+    PackageIdentityCatalogOptions block_options;
+    block_options.allow_member_blocks = true;
+    const auto block_catalog = BuildMediaPackageIdentityCatalog(game, requested, block_options);
+    Require(block_catalog && block_catalog.snapshot->Entries().size() == 2 &&
+                block_catalog.snapshot->Entries()[0].block_offset != 0,
+            "DDS block identity fixture did not map");
+    const auto block_contracts = BuildMediaPackageDdsContractCatalog(game, block_catalog.snapshot.get());
+    Require(block_contracts && block_contracts.issues.empty() &&
+                block_contracts.snapshot->Entries().size() == 2 &&
+                block_contracts.snapshot->Entries()[0].full_sha256 == expected_first_full.digest &&
+                block_contracts.snapshot->Entries()[1].full_sha256 == ComputeSha256(second_bytes).digest,
+            "DDS contracts from independent blocks are wrong");
+    block_obpk.bytes.back() ^= std::byte{1};
+    write_package(block_obpk);
+    const auto corrupt_blocks = BuildMediaPackageDdsContractCatalog(game, block_catalog.snapshot.get());
+    Require(!corrupt_blocks, "DDS block checksum was not checked");
+    write_package(obpk);
+
     PackageDdsContractCatalogOptions asset_limit;
     asset_limit.max_asset_bytes = first_bytes.size() - 1;
     const auto limited_assets = BuildMediaPackageDdsContractCatalog(
@@ -1542,6 +1564,23 @@ void TestGeneralDdsCandidates(const std::filesystem::path& root) {
         mismatch_index.snapshot.get());
     GeneralDdsCandidateOptions native_options;
     native_options.allow_native_upload = true;
+    // By default a different texture is converted to the original contract
+    // and reaches the same-size stream writer.
+    const auto converted = BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(),
+        contracts.snapshot.get(), mismatch_index.snapshot.get(), native_options);
+    const auto* const converted_second =
+        converted ? converted.snapshot->Find(second_identity) : nullptr;
+    GeneralDdsDryRunInput converted_input{};
+    converted_input.identity = second_identity;
+    Require(converted && converted.issues.empty() && converted_second != nullptr &&
+        converted_second->converted && !converted_second->requires_native_upload &&
+        converted_second->source_dds.width == 8 &&
+        converted_second->storage->Size() == original_second.size() &&
+        std::equal(original_second.begin(), original_second.begin() + 128,
+                   converted_second->storage->Bytes().begin()) &&
+        EvaluateGeneralDdsDryRun(converted.snapshot.get(), converted_input).candidate == converted_second,
+        "different DDS was not converted to the original contract");
+    native_options.convert_to_original = false;
     const auto native = BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(),
         contracts.snapshot.get(), mismatch_index.snapshot.get(), native_options);
     Require(native && native.issues.empty() && native.snapshot->Entries().size() == 2 &&
@@ -2131,6 +2170,8 @@ int wmain(const int argc, wchar_t** argv) {
     try {
         if (argc == 3 && std::wstring_view(argv[1]) == L"--texture-check")
             return CheckTextureFiles(argv[2]);
+        if (argc == 5 && std::wstring_view(argv[1]) == L"--texture-catalog")
+            return CheckTextureCatalog(argv[2], argv[3], argv[4]);
         if (argc == 4 && std::wstring_view(argv[1]) == L"--texture-catalog")
             return CheckTextureCatalog(argv[2], argv[3]);
         if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--anim-")) {
@@ -2148,9 +2189,15 @@ int wmain(const int argc, wchar_t** argv) {
         if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--model-")) {
             if ((argc == 4 || argc == 5) && std::wstring_view(argv[1]) == L"--model-check")
                 return CheckModelFiles(argv[2], argv[3], argc == 5 ? argv[4] : L"");
+            if ((argc == 4 || argc == 5) && std::wstring_view(argv[1]) == L"--model-check-unchecked")
+                return CheckModelFiles(argv[2], argv[3], argc == 5 ? argv[4] : L"", true);
             if (argc == 4 && std::wstring_view(argv[1]) == L"--model-catalog")
                 return CheckModelCatalog(argv[2], argv[3]);
+            if (argc == 4 && std::wstring_view(argv[1]) == L"--model-catalog-unchecked")
+                return CheckModelCatalog(argv[2], argv[3], true);
             std::cerr << "Usage: offline_tests --model-check ORIGINAL.2 MODIFIED.2 [EXPANDED.2]\n"
+                         "       offline_tests --model-check-unchecked ORIGINAL.2 MODIFIED.2 [FITTED.2]\n"
+                         "       offline_tests --model-catalog-unchecked GAME_DIRECTORY MODS_DIRECTORY\n"
                          "       offline_tests --model-catalog GAME_DIRECTORY MODS_DIRECTORY\n";
             return 2;
         }
@@ -2159,6 +2206,7 @@ int wmain(const int argc, wchar_t** argv) {
         TestHashAndBuildFailClosed(temporary.Path());
         TestDdsValidation();
         TestNativeTextures(temporary.Path());
+        TestTextureConversion();
         TestReadableMemoryRange();
         TestSignatureScanner();
         TestResolverProbeFilter();

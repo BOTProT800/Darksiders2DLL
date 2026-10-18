@@ -4,7 +4,7 @@
 #include <string_view>
 
 namespace ds2::modding {
-enum class ModelMode { off, observe, override_positions, override_shape };
+enum class ModelMode { off, observe, override_positions, override_shape, override_unchecked };
 // Observation only: every mode other than off hashes and matches the engine's
 // reads of candidate members. No build writes animation bytes yet.
 enum class AnimationMode { off, observe, override_keys };

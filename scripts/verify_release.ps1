@@ -61,6 +61,7 @@ foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release'
     if ($ModelModsDirectory) {
         if (!$GameDirectory) { throw 'ModelModsDirectory requiere GameDirectory.' }
         Run "$($test[0])-models" (Join-Path $dir 'offline_tests.exe') @('--model-catalog', $GameDirectory, $ModelModsDirectory)
+        Run "$($test[0])-models-unchecked" (Join-Path $dir 'offline_tests.exe') @('--model-catalog-unchecked', $GameDirectory, $ModelModsDirectory)
     }
     if ($AnimationModsDirectory) {
         if (!$GameDirectory) { throw 'AnimationModsDirectory requiere GameDirectory.' }

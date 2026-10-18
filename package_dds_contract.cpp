@@ -504,7 +504,9 @@ void AddIssue(
             target.source->virtual_path,
             dds,
             full_hash.digest,
-            payload_hash.digest});
+            payload_hash.digest,
+            std::vector<std::byte>(target.bytes.begin(),
+                target.bytes.begin() + static_cast<std::ptrdiff_t>(payload_offset))});
     }
     return true;
 }
@@ -674,6 +676,32 @@ PackageDdsContractCatalogBuildResult BuildMediaPackageDdsContractCatalog(
                 continue;
             }
             selected_bytes = next_selected;
+            if (entry.block_offset != 0) {
+                // Independent blocks (media/items/...): each member is its own
+                // stream, a u32 output size followed by zlib, as for models.
+                std::uint64_t size_position = 0;
+                std::array<std::byte, sizeof(std::uint32_t)> declared{};
+                DWORD read_error = ERROR_SUCCESS;
+                if (entry.block_offset < entry.identity.member_table_offset ||
+                    entry.block_end > entry.segment_size ||
+                    entry.block_end <= static_cast<std::uint64_t>(entry.block_offset) + 4 ||
+                    entry.uncompressed_offset != 0 ||
+                    !CheckedAdd(entry.identity.package_base,
+                                static_cast<std::uint64_t>(entry.block_offset), size_position) ||
+                    !package.ReadAt(size_position, declared, read_error) ||
+                    ReadU32(declared) != entry.original_size) {
+                    AddIssue(
+                        result, options, entry,
+                        PackageDdsContractCatalogIssueCode::invalid_original_dds,
+                        L"independent DDS block disagrees with its metadata or bounds");
+                    continue;
+                }
+                groups[StreamGroupKey{
+                    entry.identity.package_base,
+                    entry.block_offset,
+                    entry.block_end}].push_back(std::addressof(entry));
+                continue;
+            }
             groups[StreamGroupKey{
                 entry.identity.package_base,
                 entry.identity.member_table_offset,

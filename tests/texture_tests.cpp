@@ -1,6 +1,7 @@
 #include "texture_tests.h"
 #include "native_texture.h"
 #include "png_texture.h"
+#include "texture_convert.h"
 #include "general_dds_candidate.h"
 #include "loader_config.h"
 #include <d3d11.h>
@@ -205,18 +206,60 @@ int CheckTextureFiles(const std::filesystem::path& source) {
     } else check(source);
     return 0;
 }
-int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods) {
+void TestTextureConversion() {
+    // Solid BGRA 8x4 -> BC1 16x16 with its full mip chain: every block holds
+    // the 565-quantized color (24,25,6) and the original header is verbatim.
+    auto source=Dds(8,4,true);const auto source_meta=*ValidateDds(source).metadata;
+    for(std::size_t at=128;at<source.size();at+=4) {
+        source[at]=std::byte{50};source[at+1]=std::byte{100};source[at+2]=std::byte{200};source[at+3]=std::byte{255};
+    }
+    auto target=Dds(16,16,false);target[127]=std::byte{0x5A}; // reserved header byte must survive
+    const auto target_meta=*ValidateDds(target).metadata;
+    const auto bc1=ConvertDdsToContract(source,source_meta,std::span(target).first(128),target_meta);
+    Check(bool(bc1)&&bc1.bytes.size()==target.size()&&std::equal(target.begin(),target.begin()+128,bc1.bytes.begin()),
+        "BGRA to BC1 conversion lost the original contract");
+    const auto converted=ValidateDds(bc1.bytes);
+    Check(bool(converted)&&converted.metadata->width==16&&converted.metadata->mip_count==target_meta.mip_count,
+        "converted BC1 is not a valid DDS of the original contract");
+    for(std::size_t at=128;at<bc1.bytes.size();at+=8)
+        Check(bc1.bytes[at]==std::byte{0x26}&&bc1.bytes[at+1]==std::byte{0xC3}&&bc1.bytes[at+2]==std::byte{0x26}&&
+              bc1.bytes[at+3]==std::byte{0xC3}&&bc1.bytes[at+4]==std::byte{}&&bc1.bytes[at+7]==std::byte{},
+              "solid color did not encode to its exact BC1 endpoints");
+    // BC1 red block -> BGRA 8x8: decoding and enlarging keep the color.
+    auto red=Dds(4,4,false);const auto red_meta=*ValidateDds(red).metadata;
+    std::fill(red.begin()+128,red.end(),std::byte{});
+    for(std::size_t at=128;at<red.size();at+=8) { red[at]=std::byte{0x00};red[at+1]=std::byte{0xF8}; }
+    auto bgra=Dds(8,8,true);const auto bgra_meta=*ValidateDds(bgra).metadata;
+    const auto decoded=ConvertDdsToContract(red,red_meta,std::span(bgra).first(128),bgra_meta);
+    Check(bool(decoded)&&decoded.bytes.size()==bgra.size(),"BC1 to BGRA conversion failed");
+    for(std::size_t at=128;at<decoded.bytes.size();at+=4)
+        Check(decoded.bytes[at]==std::byte{0}&&decoded.bytes[at+1]==std::byte{0}&&
+              decoded.bytes[at+2]==std::byte{255}&&decoded.bytes[at+3]==std::byte{255},"BC1 red did not decode to red");
+    // Limits: header size and unsupported formats.
+    Check(!ConvertDdsToContract(source,source_meta,std::span(target).first(64),target_meta),"short header accepted");
+    auto bc4=target_meta;bc4.format=DdsFormat::bc4;
+    Check(!CanConvertDdsFormat(DdsFormat::bc4)&&!ConvertDdsToContract(source,source_meta,std::span(target).first(128),bc4),
+        "BC4 conversion accepted");
+    std::cout<<"texture_conversion: PASS (BGRA->BC1 exact endpoints and mips, BC1->BGRA decode, verbatim header, limits)\n";
+}
+
+int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods,const std::filesystem::path& output) {
     using namespace ds2::modding;
     ModIndexOptions o;o.dds_only=true;o.include_png=true;o.max_asset_file_size=64ull*1024*1024;o.max_total_bytes=256ull*1024*1024;
     const auto index=BuildModIndex(mods,o);Check(index&&index.issues.empty(),"texture mod index rejected files");
     std::vector<CanonicalVirtualPath> paths;for(const auto& a:index.snapshot->Assets()) paths.push_back(a.virtual_path);
     Check(!paths.empty(),"texture catalog is empty");
-    const auto catalog=BuildMediaPackageIdentityCatalog(game,paths);Check(catalog&&catalog.issues.empty(),"texture identities missing");
+    PackageIdentityCatalogOptions identity;identity.allow_member_blocks=true; // as the loader does
+    const auto catalog=BuildMediaPackageIdentityCatalog(game,paths,identity);Check(catalog&&catalog.issues.empty(),"texture identities missing");
     const auto contracts=BuildMediaPackageDdsContractCatalog(game,catalog.snapshot.get());Check(contracts&&contracts.issues.empty(),"texture original contracts unavailable");
     GeneralDdsCandidateOptions options;options.allow_native_upload=true;
     const auto candidates=BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(),contracts.snapshot.get(),index.snapshot.get(),options);
     Check(candidates&&candidates.issues.empty()&&candidates.snapshot->Entries().size()==paths.size(),"native texture candidates rejected");
     for(const auto& c:candidates.snapshot->Entries()) std::wcout<<c.virtual_path.key<<L" "<<c.original_dds.width<<L"x"<<c.original_dds.height
-        <<L" -> "<<c.dds.width<<L"x"<<c.dds.height<<L" native="<<c.requires_native_upload<<L"\n";
+        <<L" -> "<<c.source_dds.width<<L"x"<<c.source_dds.height<<L" route="
+        <<(c.requires_native_upload ? L"native_upload" : c.converted ? L"converted_stream_copy" : L"stream_copy")
+        <<(c.conversion_error.empty() ? std::wstring{} : L" conversion_error="+c.conversion_error)<<L"\n";
+    if(!output.empty()) for(const auto& c:candidates.snapshot->Entries())
+        Write(output/std::filesystem::path(c.virtual_path.key).filename(),c.storage->Bytes());
     return 0;
 }

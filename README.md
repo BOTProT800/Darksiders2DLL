@@ -1,6 +1,21 @@
 # Darksiders2DLL
 
-**Código actual: 0.8.1-deletion-trial.** Con `models=override_shape`, un `.2`
+**Código actual: 0.9.2-unchecked-trial.** Una textura DDS o PNG distinta
+del original (otro tamaño, mips o formato) se convierte al contrato exacto del
+original y se entrega por la copia del mismo tamaño, la vía confirmada en el
+juego. La subida nativa de la 0.6.0 nunca se activó en el juego y queda como
+último recurso.
+
+**0.9.1-unchecked-trial.** `models=override_unchecked` acepta
+cualquier `.2` de reemplazo sin reglas de contenido (malla nueva, UV, pesos,
+huesos o cajas) y lo encaja en los tamaños de lectura del original. Solo
+rechaza lo que no cabe: una malla o un material mayor que el original, u otra
+cabecera, número de mallas o materiales. Una malla nueva de hombrera ya cargó en
+el juego. Las texturas DDS de segmentos de bloques independientes
+(`media/items/...`) ahora también se sustituyen
+([evidencia](research/MODEL_TRIAL.md)).
+
+**0.8.1-deletion-trial.** Con `models=override_shape`, un `.2`
 exportado por Anansi con vértices o caras borrados en mallas con piel se
 reexpande al tamaño original: los triángulos borrados se colapsan en su sitio y
 el motor recibe sus lecturas con los tamaños de siempre. Se confirmó en el juego

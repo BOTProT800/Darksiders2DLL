@@ -41,8 +41,16 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
         return false;
     }
     auto storage = asset.storage;
-    std::uint32_t removed_vertices = 0, removed_triangles = 0;
-    if (contract == ModelEditContract::bounded_shape && storage->Size() < original.size()) {
+    std::uint32_t removed_vertices = 0, removed_triangles = 0, spare_vertices = 0, collapsed_triangles = 0;
+    if (contract == ModelEditContract::unchecked) {
+        auto fitted = FitModelReplacement(original, storage->Bytes());
+        if (!fitted) { error = L"unchecked: " + fitted.error; return false; }
+        spare_vertices = fitted.spare_vertices;
+        collapsed_triangles = fitted.collapsed_triangles;
+        auto rebuilt = MakeByteStorage(std::move(fitted.bytes));
+        if (!rebuilt) { error = L"fitted model storage failed"; return false; }
+        storage = std::move(rebuilt.storage);
+    } else if (contract == ModelEditContract::bounded_shape && storage->Size() < original.size()) {
         auto expanded = ExpandModelDeletion(original, storage->Bytes());
         if (!expanded) { error = L"deletion: " + expanded.error; return false; }
         removed_vertices = expanded.removed_vertices;
@@ -55,7 +63,8 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
     const auto validated = ValidateModelEdit(original, replacement, contract);
     if (!validated) { error = validated.error; return false; }
     ModelCandidate prepared{entry.identity, entry.virtual_path, asset.mod_id, storage, {},
-                            asset.storage->Size(), removed_vertices, removed_triangles};
+                            asset.storage->Size(), removed_vertices, removed_triangles,
+                            contract == ModelEditContract::unchecked, spare_vertices, collapsed_triangles};
     const auto add_range = [&](const std::uint32_t offset, const std::uint32_t size) {
         if (size == 0 || offset > original.size() || size > original.size() - offset) return false;
         for (const auto& range : prepared.ranges)
@@ -70,10 +79,22 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
         !add_range(validated.layout.data_offset, entry.original_size - validated.layout.data_offset)) {
         error = L"model range hashing failed"; return false;
     }
-    for (const auto& block : validated.layout.vertex_blocks) {
-        // The engine reads each index buffer on its own, after its 8-byte prefix.
-        if (!add_range(block.index_offset, block.index_count * 2) || !add_range(block.offset, block.size)) {
+    // The engine reads the header, then each index buffer (after its 8-byte
+    // prefix) and each per-vertex array on its own.
+    for (const auto& read : validated.layout.reads) {
+        if (!add_range(read.offset, read.size)) {
             error = L"model vertex range hashing failed"; return false;
+        }
+    }
+    // Without content rules a skipped range would mix new counts or palettes
+    // with old arrays: every changed read must be identifiable.
+    if (contract == ModelEditContract::unchecked) {
+        for (const auto& range : prepared.ranges) {
+            if (range.original_hash != range.replacement_hash &&
+                MatchModelRange(prepared, range.size, range.original_hash) != &range) {
+                error = L"unchecked: ambiguous read range at offset " + std::to_wstring(range.offset);
+                return false;
+            }
         }
     }
     candidate = std::move(prepared);
