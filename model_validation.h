@@ -73,4 +73,42 @@ struct ModelFitResult final {
 // material larger than the original one. No content check is made.
 [[nodiscard]] ModelFitResult FitModelReplacement(
     std::span<const std::byte> original, std::span<const std::byte> replacement);
+
+// The counts gfc::MeshResourceArray reads from the package metadata (0x10867AC)
+// and repeats in the .2 header: header size, then per mesh the index count,
+// the signed vertex count (negative = static) and, for the first `pairs` meshes,
+// the integer of the header's pair table.
+struct ModelEngineMesh final {
+    std::uint32_t indices{};
+    std::int32_t vertices{}, pair{};
+};
+struct ModelEngineCounts final {
+    std::uint32_t header_size{}, pairs{};
+    std::vector<ModelEngineMesh> meshes;
+};
+// One buffer of the engine's read list; skipped buffers have a null destination.
+struct ModelEngineBuffer final {
+    std::uint32_t size{};
+    bool skipped{};
+    bool operator==(const ModelEngineBuffer&) const = default;
+};
+[[nodiscard]] bool ReadModelEngineCounts(std::span<const std::byte> model, ModelEngineCounts& counts) noexcept;
+[[nodiscard]] std::vector<ModelEngineBuffer> ModelEngineBuffers(const ModelEngineCounts& counts);
+[[nodiscard]] std::uint64_t ModelEngineSize(const ModelEngineCounts& counts) noexcept;
+[[nodiscard]] std::vector<std::byte> EncodeModelEngineExtra(const ModelEngineCounts& counts);
+
+struct ModelResizePlan final {
+    std::vector<std::byte> extra;            // replacement counts, same length as the original
+    std::vector<ModelEngineBuffer> buffers;  // the engine's reads of the replacement, in order
+    std::uint32_t original_header_size{}, replacement_header_size{};
+    std::wstring error;
+    [[nodiscard]] explicit operator bool() const noexcept { return error.empty(); }
+};
+// A replacement of any size is deliverable when the engine's buffer list,
+// computed from its own counts, spans exactly its bytes, and its counts fit the
+// original's metadata entry (same mesh and pair count). The original's entry
+// must equal the counts derived from its header, proving the layout per member.
+[[nodiscard]] ModelResizePlan PlanModelResize(
+    std::span<const std::byte> original, std::span<const std::byte> replacement,
+    std::span<const std::byte> original_extra);
 }

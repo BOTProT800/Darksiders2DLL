@@ -5,6 +5,8 @@ param(
     [string]$GameDirectory = '',
     [string]$AssetSource = '',
     [string]$ModelModsDirectory = '',
+    # Replacements only override_unchecked accepts (new or larger meshes).
+    [string]$UncheckedModelModsDirectory = '',
     [string]$AnimationModsDirectory = '',
     [string]$AnimationCorpusDirectory = '',
     [ValidatePattern('^[A-Za-z0-9.-]+$')]
@@ -62,6 +64,10 @@ foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release'
         if (!$GameDirectory) { throw 'ModelModsDirectory requiere GameDirectory.' }
         Run "$($test[0])-models" (Join-Path $dir 'offline_tests.exe') @('--model-catalog', $GameDirectory, $ModelModsDirectory)
         Run "$($test[0])-models-unchecked" (Join-Path $dir 'offline_tests.exe') @('--model-catalog-unchecked', $GameDirectory, $ModelModsDirectory)
+    }
+    if ($UncheckedModelModsDirectory) {
+        if (!$GameDirectory) { throw 'UncheckedModelModsDirectory requiere GameDirectory.' }
+        Run "$($test[0])-models-unchecked-only" (Join-Path $dir 'offline_tests.exe') @('--model-catalog-unchecked', $GameDirectory, $UncheckedModelModsDirectory)
     }
     if ($AnimationModsDirectory) {
         if (!$GameDirectory) { throw 'AnimationModsDirectory requiere GameDirectory.' }

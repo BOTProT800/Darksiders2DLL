@@ -620,6 +620,236 @@ struct GeneralDdsWriteResult final {
 }
 #endif
 
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+// Resized models (research/MESH_RESIZE_RESEARCH.md). The package metadata
+// block is read in one call returning to 0x9FEDC7. The data loop (0x9FEE5C)
+// reads buffers from 0x9FF0CD and skips null buffers through 0x100120, which
+// reads the non-seekable inflate wrapper in chunks returning to 0x100181,
+// itself called from 0x9FF040 (return 0x9FF045) in the same 0x9FEE5C frame.
+constexpr std::uintptr_t kModelMetadataReadReturnRva = 0x009FEDC7;
+constexpr std::uintptr_t kStreamSkipReadReturnRva = 0x00100181;
+constexpr std::uintptr_t kStreamSkipCallReturnRva = 0x009FF045;
+std::unique_ptr<std::atomic<std::uint32_t>[]> g_model_resize_patched;
+std::atomic<std::uint64_t> g_model_resize_metadata_patches{}, g_model_resize_metadata_failures{},
+    g_model_resize_members{}, g_model_resize_failures{};
+
+struct ModelSplice final {
+    const ModelCandidate* candidate{};
+    std::uintptr_t wrapper{};
+    std::uint64_t member_index{};
+    std::size_t cursor{};
+    std::uint32_t operations{}, first_request{};
+    bool original_verified{};
+};
+constinit thread_local ModelSplice t_model_splice;
+
+// Copies into the engine's memory and reads the bytes back.
+[[nodiscard]] bool CopyAndVerify(void* const destination, const std::byte* const source,
+                                 const std::size_t size) noexcept {
+    SIZE_T written = 0;
+    if (destination == nullptr || WriteProcessMemory(GetCurrentProcess(), destination, source, size, &written) == FALSE ||
+        written != size) return false;
+    std::array<std::byte, 4096> check{};
+    for (std::size_t offset = 0; offset < size;) {
+        const auto count = (std::min)(check.size(), size - offset);
+        SIZE_T read = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), static_cast<const std::byte*>(destination) + offset,
+                              check.data(), count, &read) == FALSE || read != count ||
+            std::memcmp(check.data(), source + offset, count) != 0) {
+            SetLastError(ERROR_CRC);
+            return false;
+        }
+        offset += count;
+    }
+    return true;
+}
+
+void PublishModelResize(const ModelCandidate& candidate, const ModelResizePhase phase,
+                        const ModelSplice* const splice, const DWORD win32_error) noexcept {
+    auto* slot = ClaimEventSlot();
+    if (!slot) return;
+    ResolverProbeEvent event{};
+    event.kind = ResolverProbeEventKind::model_resize;
+    auto& resize = event.model_resize;
+    resize.phase = phase;
+    resize.identity = candidate.identity;
+    resize.replacement_source = true;
+    resize.original_size = candidate.resize->original_size;
+    resize.source_size = static_cast<std::uint32_t>(candidate.storage->Size());
+    if (splice) {
+        resize.original_verified = splice->original_verified;
+        resize.delivered = static_cast<std::uint32_t>(splice->cursor);
+        resize.operations = splice->operations;
+        resize.first_request = splice->first_request;
+    }
+    resize.win32_error = win32_error;
+    CaptureEventContext(event);
+    slot->event = event;
+    PublishEventSlot(*slot, ResolverProbeEventKind::model_resize);
+}
+
+// Same length: member sizes and the final table stay original, because the
+// stream underneath still holds the original member.
+void PatchResizedModelMetadata(void* const destination, const std::int32_t requested,
+                               const std::int32_t returned) noexcept {
+    const auto* snapshot = g_model_candidates.load(std::memory_order_acquire);
+    if (!snapshot || !g_model_resize_patched || destination == nullptr || requested <= 0 ||
+        returned != requested || !g_model_write_enabled.load(std::memory_order_acquire) ||
+        !g_writer_enabled.load(std::memory_order_acquire) || g_writer_faulted.load(std::memory_order_acquire)) return;
+    bool hashed = false;
+    Sha256Digest block{};
+    for (std::size_t i = 0; i < snapshot->entries.size(); ++i) {
+        const auto& candidate = snapshot->entries[i];
+        if (!candidate.resize || candidate.resize->metadata_size != static_cast<std::uint32_t>(requested)) continue;
+        if (!hashed) {
+            if (!TryHashProcessMemory(destination, static_cast<std::size_t>(requested), block)) return;
+            hashed = true;
+        }
+        if (block != candidate.resize->metadata_sha256) continue;
+        const auto& extra = candidate.resize->extra;
+        if (CopyAndVerify(static_cast<std::byte*>(destination) + candidate.resize->extra_offset,
+                          extra.data(), extra.size())) {
+            g_model_resize_patched[i].fetch_add(1, std::memory_order_acq_rel);
+            g_model_resize_metadata_patches.fetch_add(1, std::memory_order_relaxed);
+            PublishModelResize(candidate, ModelResizePhase::metadata_patched, nullptr, ERROR_SUCCESS);
+        } else {
+            const DWORD error = GetLastError();
+            g_model_resize_metadata_failures.fetch_add(1, std::memory_order_relaxed);
+            g_writer_faulted.store(true, std::memory_order_release);
+            PublishModelResize(candidate, ModelResizePhase::metadata_failed, nullptr, error);
+        }
+    }
+}
+
+struct SpliceOperation final {
+    bool valid{}, direct{};
+    std::uint64_t member_index{};
+};
+[[nodiscard]] SpliceOperation ClassifySpliceOperation(const std::uintptr_t caller_rva,
+                                                      const std::uintptr_t slot,
+                                                      const std::uintptr_t stream) noexcept {
+    SpliceOperation op;
+    constexpr auto maximum = (std::numeric_limits<std::uintptr_t>::max)();
+    if (slot == 0 || slot > maximum - 0xA8) return op;
+    if (caller_rva == kExpectedResourceReadReturnRva) {
+        // 0x9FF0CD: file index at [rsp+0x30], RCX = rsp+0x70 (CaptureResourceMemberOrdinal).
+        op.direct = true;
+        op.valid = stream == slot + 0x78 &&
+                   CopyProcessMemory(reinterpret_cast<const void*>(slot + 0x38), &op.member_index,
+                                     sizeof(op.member_index));
+    } else if (caller_rva == kStreamSkipReadReturnRva) {
+        // 0x100120 (push rdi; sub rsp,20h) reached from 0x9FF040: its return
+        // slot is R+0x30, and the 0x9FEE5C frame starts at R+0x38.
+        std::uintptr_t skip_return = 0;
+        op.valid = stream == slot + 0xA8 &&
+                   CopyProcessMemory(reinterpret_cast<const void*>(slot + 0x30), &skip_return,
+                                     sizeof(skip_return)) &&
+                   skip_return == g_game_image_base + kStreamSkipCallReturnRva &&
+                   CopyProcessMemory(reinterpret_cast<const void*>(slot + 0x68), &op.member_index,
+                                     sizeof(op.member_index));
+    }
+    return op;
+}
+
+[[nodiscard]] bool ConsumeOriginalMember(const StreamReadFn original, void* const stream,
+                                         const std::uint32_t size, Sha256Digest& digest) noexcept {
+    PortableSha256Context context;
+    std::array<std::byte, 16384> chunk{};
+    for (std::uint32_t done = 0; done < size;) {
+        const auto count = static_cast<std::int32_t>((std::min<std::uint32_t>)(
+            static_cast<std::uint32_t>(chunk.size()), size - done));
+        if (original(stream, chunk.data(), count) != count ||
+            !PortableSha256Update(context, std::span(chunk.data(), static_cast<std::size_t>(count)))) return false;
+        done += static_cast<std::uint32_t>(count);
+    }
+    return PortableSha256Finalize(context, digest);
+}
+
+void FinishModelSplice(const ModelResizePhase phase, const DWORD win32_error = ERROR_SUCCESS) noexcept {
+    auto& splice = t_model_splice;
+    if (!splice.candidate) return;
+    if (phase == ModelResizePhase::complete) g_model_resize_members.fetch_add(1, std::memory_order_relaxed);
+    else g_model_resize_failures.fetch_add(1, std::memory_order_relaxed);
+    PublishModelResize(*splice.candidate, phase, &splice, win32_error);
+    splice = {};
+}
+
+[[nodiscard]] bool ServeModelSplice(const bool direct, void* const destination,
+                                    const std::int32_t requested, std::int32_t& result) noexcept {
+    auto& splice = t_model_splice;
+    const auto source = splice.candidate->storage->Bytes();
+    const auto count = static_cast<std::size_t>(requested);
+    if (count > source.size() - splice.cursor) {
+        // The engine's buffers do not follow the patched counts.
+        g_writer_faulted.store(true, std::memory_order_release);
+        FinishModelSplice(ModelResizePhase::failed, ERROR_INVALID_DATA);
+        return false;
+    }
+    // Skips read into the engine's scratch buffer: nothing to deliver there.
+    if (direct && !CopyAndVerify(destination, source.data() + splice.cursor, count)) {
+        const DWORD error = GetLastError();
+        g_writer_faulted.store(true, std::memory_order_release);
+        FinishModelSplice(ModelResizePhase::failed, error);
+        return false;
+    }
+    splice.cursor += count;
+    ++splice.operations;
+    result = requested;
+    if (splice.cursor == source.size()) FinishModelSplice(ModelResizePhase::complete);
+    return true;
+}
+
+// Called before the original read. Returns true when the read was served from
+// a resized replacement; `result` then holds the engine's expected count.
+[[nodiscard]] bool TrySpliceModelRead(const StreamReadFn original, const std::uintptr_t caller_rva,
+                                      const std::uintptr_t slot, void* const stream, void* const destination,
+                                      const std::int32_t requested, std::int32_t& result) noexcept {
+    if (requested <= 0) return false;
+    auto& splice = t_model_splice;
+    const auto stream_address = reinterpret_cast<std::uintptr_t>(stream);
+    const auto op = ClassifySpliceOperation(caller_rva, slot, stream_address);
+    if (splice.candidate) {
+        if (op.valid && stream_address == splice.wrapper && op.member_index == splice.member_index)
+            return ServeModelSplice(op.direct, destination, requested, result);
+        // Moved on early: the stream is already aligned after the original.
+        if (op.valid || stream_address == splice.wrapper) FinishModelSplice(ModelResizePhase::incomplete);
+    }
+    // Skips before a member's first read belong to earlier members.
+    if (!op.valid || !op.direct || !g_model_resize_patched ||
+        !g_model_write_enabled.load(std::memory_order_acquire) ||
+        !g_writer_enabled.load(std::memory_order_acquire) || g_writer_faulted.load(std::memory_order_acquire))
+        return false;
+    const auto* scope = g_resource_identity_context.ActiveScope();
+    const auto* snapshot = g_model_candidates.load(std::memory_order_acquire);
+    if (!scope || !snapshot || !scope->object_fields_valid ||
+        scope->caller_rva != kExpectedResourceIdentityOuterReturnRva ||
+        op.member_index >= kResourceIdentityMaxMembersPerScope) return false;
+    const PackageResourceIdentity identity{scope->package_base,
+        static_cast<std::uint32_t>(scope->member_table_offset), static_cast<std::uint32_t>(op.member_index) + 1};
+    const auto* candidate = snapshot->Find(identity);
+    if (!candidate || !candidate->resize) return false;
+    const auto& resize = *candidate->resize;
+    const auto index = static_cast<std::size_t>(candidate - snapshot->entries.data());
+    // The header is a member's first buffer; its size shows which counts the
+    // engine used. Equal header sizes rely on every metadata patch succeeding.
+    if (g_model_resize_patched[index].load(std::memory_order_acquire) == 0 ||
+        static_cast<std::uint32_t>(requested) != resize.replacement_header_size ||
+        (resize.replacement_header_size == resize.original_header_size &&
+         g_model_resize_metadata_failures.load(std::memory_order_acquire) != 0)) return false;
+    Sha256Digest consumed{};
+    if (!ConsumeOriginalMember(original, stream, resize.original_size, consumed)) {
+        g_writer_faulted.store(true, std::memory_order_release);
+        g_model_resize_failures.fetch_add(1, std::memory_order_relaxed);
+        PublishModelResize(*candidate, ModelResizePhase::failed, nullptr, ERROR_READ_FAULT);
+        return false;
+    }
+    splice = {candidate, stream_address, op.member_index, 0, 0, static_cast<std::uint32_t>(requested),
+              consumed == resize.original_sha256};
+    PublishModelResize(*candidate, ModelResizePhase::begin, &splice, ERROR_SUCCESS);
+    return ServeModelSplice(true, destination, requested, result);
+}
+#endif
+
 void ObserveModelRead(const ResourceIdentitySample& sample, void* destination,
                       const std::int32_t requested, const std::int32_t returned,
                       const DWORD result_error) noexcept {
@@ -969,10 +1199,23 @@ __declspec(noinline) std::int32_t HookStreamRead(
         NotifyStreamFirstEntryOnce();
         SetLastError(entry_error);
     }
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    {
+        const DWORD entry_error = GetLastError();
+        std::int32_t spliced = 0;
+        const bool served = TrySpliceModelRead(
+            original, caller_rva, return_address_slot, stream, destination, byte_count, spliced);
+        SetLastError(entry_error);
+        if (served) return spliced;
+    }
+#endif
     ForgetNativeTextureRead(destination, byte_count);
     const std::int32_t result = original(stream, destination, byte_count);
 #if defined(DS2_GENERAL_DDS_ENABLED)
     const DWORD result_error = GetLastError();
+#endif
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    if (caller_rva == kModelMetadataReadReturnRva) PatchResizedModelMetadata(destination, byte_count, result);
 #endif
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
     ResourceIdentitySample identity_sample;
@@ -1092,6 +1335,11 @@ bool InitializeResolverProbe(
     g_general_candidates_owner = std::move(general_candidates);
     g_general_candidates.store(g_general_candidates_owner.get(), std::memory_order_release);
     g_model_candidates_owner = std::move(model_candidates);
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    if (g_model_candidates_owner)
+        g_model_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(
+            g_model_candidates_owner->entries.size());
+#endif
     g_model_candidates.store(g_model_candidates_owner.get(), std::memory_order_release);
     g_model_write_enabled.store(model_write_enabled, std::memory_order_release);
     g_animation_candidates_owner = std::move(animation_candidates);
@@ -1421,6 +1669,12 @@ ResolverProbeStats GetResolverProbeStats() noexcept {
     stats.model_write_attempts = g_model_write_attempts.load(std::memory_order_relaxed);
     stats.model_writes = g_model_writes.load(std::memory_order_relaxed);
     stats.model_failures = g_model_failures.load(std::memory_order_relaxed);
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    stats.model_resize_metadata_patches = g_model_resize_metadata_patches.load(std::memory_order_relaxed);
+    stats.model_resize_members = g_model_resize_members.load(std::memory_order_relaxed);
+    stats.model_resize_failures = g_model_resize_failures.load(std::memory_order_relaxed) +
+        g_model_resize_metadata_failures.load(std::memory_order_relaxed);
+#endif
     stats.animation_reads = g_animation_reads.load(std::memory_order_relaxed);
     stats.animation_matches = g_animation_matches.load(std::memory_order_relaxed);
     stats.read_file_calls = g_read_file_calls.load(std::memory_order_relaxed);

@@ -6,6 +6,12 @@
 
 void TestModelRuntime(const ds2::modding::ModelCandidate& candidate,
                       std::span<const std::byte> original);
+// Drives the metadata read and a member's data loop through the real detour:
+// the resized member is delivered at its own size and the stream stays aligned.
+void TestModelResizeRuntime(const ds2::modding::ModelCandidate& candidate,
+                            std::span<const std::byte> original,
+                            std::span<const std::byte> metadata_block,
+                            std::span<const std::byte> next_member);
 void TestAnimationRuntime(const ds2::modding::AnimationCandidate& candidate,
                           std::span<const std::byte> original);
 

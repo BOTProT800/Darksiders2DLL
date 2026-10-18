@@ -58,6 +58,10 @@ void Check(const bool condition, const char* message) {
 extern "C" std::int32_t InvokeResourceReadFrame(
     std::int32_t (*function)(void*, void*, std::int32_t),
     void* destination, std::int32_t count, std::uint64_t member_index);
+// skip_return == 0: the direct read; otherwise the skip path inside 0x100120.
+extern "C" std::int32_t InvokeEngineFrame(
+    std::int32_t (*function)(void*, void*, std::int32_t),
+    void* destination, std::int32_t count, std::uint64_t member_index, std::uintptr_t skip_return);
 
 namespace {
 using namespace ds2::modding;
@@ -82,6 +86,11 @@ void ResetRuntime() {
     g_model_reads = 0; g_model_matches = 0; g_model_write_attempts = 0;
     g_model_writes = 0; g_model_failures = 0;
     g_animation_reads = 0; g_animation_matches = 0;
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    g_model_resize_metadata_patches = 0; g_model_resize_metadata_failures = 0;
+    g_model_resize_members = 0; g_model_resize_failures = 0;
+    t_model_splice = {};
+#endif
     ResolverProbeEvent event;
     while (TryPopResolverProbeEvent(event)) {}
 }
@@ -446,6 +455,191 @@ void TestModelRuntime(const ds2::modding::ModelCandidate& candidate,
     g_original_stream_read = nullptr; g_game_image_base = 0;
     ResetRuntime();
     std::cout << "model_runtime: PASS (explicit identity, full/payload/index/vertex blocks, observe, 9 gates, shared fault latch)\n";
+}
+
+namespace {
+// The decompressed stream under the inflate wrapper: what the engine would
+// read from the package for the member and the one after it.
+std::vector<std::byte> fake_stream;
+std::size_t fake_cursor{};
+std::int32_t SequenceStreamRead(void*, void* destination, const std::int32_t count) {
+    const auto n = (std::min)(static_cast<std::size_t>(count), fake_stream.size() - fake_cursor);
+    if (destination != nullptr) std::memcpy(destination, fake_stream.data() + fake_cursor, n);
+    fake_cursor += n;
+    return static_cast<std::int32_t>(n);
+}
+std::vector<ds2::modding::ResolverProbeEvent> DrainResizeEvents() {
+    std::vector<ds2::modding::ResolverProbeEvent> events;
+    ds2::modding::ResolverProbeEvent event;
+    while (TryPopResolverProbeEvent(event))
+        if (event.kind == ds2::modding::ResolverProbeEventKind::model_resize) events.push_back(event);
+    return events;
+}
+}
+
+void TestModelResizeRuntime(const ds2::modding::ModelCandidate& candidate,
+                            const std::span<const std::byte> original,
+                            const std::span<const std::byte> metadata_block,
+                            const std::span<const std::byte> next_member) {
+    using namespace ds2::modding;
+    Check(candidate.resize.has_value(), "resize runtime fixture has no plan");
+    ModelCandidateSnapshot snapshot;
+    snapshot.entries.push_back(candidate);
+    g_model_candidates = &snapshot;
+    g_original_stream_read = SequenceStreamRead;
+    (void)InvokeEngineFrame(RecordCaller, nullptr, 0, 0, 0);
+    const auto direct_return = recorded_caller;
+    (void)InvokeEngineFrame(RecordCaller, nullptr, 0, 0, 1);
+    const auto skip_return = recorded_caller;
+    ResourceIdentityScopeInput input;
+    input.stream_valid = true; input.stream = 1; input.object_fields_valid = true;
+    input.package_base = candidate.identity.package_base;
+    input.member_table_offset = static_cast<std::int32_t>(candidate.identity.member_table_offset);
+    input.caller_rva = kExpectedResourceIdentityOuterReturnRva;
+    const std::uint64_t index = candidate.identity.member_ordinal - 1;
+    const auto replacement = candidate.storage->Bytes();
+    const auto& resize = *candidate.resize;
+    // One call site for every engine read keeps the frame, and so the
+    // wrapper address, identical across direct reads and skips.
+    const auto engine = [&](void* destination, const std::uint32_t size, const std::uint64_t member,
+                            const bool skip) {
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+        g_game_image_base = skip ? skip_return - kStreamSkipReadReturnRva
+                                 : direct_return - kExpectedResourceReadReturnRva;
+        const std::uintptr_t skip_call = skip ? g_game_image_base + kStreamSkipCallReturnRva : 0;
+#else
+        g_game_image_base = direct_return - kExpectedResourceReadReturnRva;
+        const std::uintptr_t skip_call = 0;
+        static_cast<void>(skip);
+#endif
+        return InvokeEngineFrame(HookStreamRead, destination, static_cast<std::int32_t>(size), member, skip_call);
+    };
+    const auto read_metadata = [&](std::vector<std::byte>& block) {
+        fake_stream.assign(metadata_block.begin(), metadata_block.end()); fake_cursor = 0;
+        block.assign(metadata_block.size(), std::byte{});
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+        g_game_image_base = direct_return - kModelMetadataReadReturnRva;
+#endif
+        return InvokeEngineFrame(HookStreamRead, block.data(), static_cast<std::int32_t>(block.size()), 0, 0);
+    };
+    const auto load_stream = [&] {
+        fake_stream.assign(original.begin(), original.end());
+        fake_stream.insert(fake_stream.end(), next_member.begin(), next_member.end());
+        fake_cursor = 0;
+    };
+    ResetRuntime();
+    g_model_write_enabled = true;
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    g_model_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(1);
+    {
+        // Without a metadata patch the engine keeps the original counts.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 7);
+        std::vector<std::byte> header(resize.replacement_header_size);
+        Check(engine(header.data(), resize.replacement_header_size, index, false) ==
+                  static_cast<std::int32_t>(resize.replacement_header_size) &&
+                  fake_cursor == resize.replacement_header_size && DrainResizeEvents().empty(),
+              "unpatched resize member was spliced");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    // The metadata read: same length, only this member's counts rewritten.
+    std::vector<std::byte> block;
+    Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+              g_model_resize_patched[0] == 1 && g_model_resize_metadata_patches == 1,
+          "resize metadata not patched");
+    auto expected_block = std::vector<std::byte>(metadata_block.begin(), metadata_block.end());
+    std::copy(resize.extra.begin(), resize.extra.end(), expected_block.begin() + resize.extra_offset);
+    auto events = DrainResizeEvents();
+    Check(block == expected_block && events.size() == 1 &&
+              events[0].model_resize.phase == ModelResizePhase::metadata_patched, "resize metadata block differs");
+    {
+        // A header of the original size: the engine used another copy of the
+        // counts, so the member is read unchanged.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 8);
+        std::vector<std::byte> header(resize.original_header_size);
+        Check(engine(header.data(), resize.original_header_size, index, false) ==
+                  static_cast<std::int32_t>(resize.original_header_size) &&
+                  std::equal(header.begin(), header.end(), original.begin()) && DrainResizeEvents().empty(),
+              "original-count header was spliced");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // The data loop over the patched counts: direct reads and skips.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 9);
+        std::size_t offset = 0;
+        std::array<std::byte, 8> scratch{};
+        for (const auto& buffer : resize.buffers) {
+            std::int32_t got = 0;
+            if (buffer.skipped) {
+                got = engine(scratch.data(), buffer.size, index, true);
+            } else {
+                std::vector<std::byte> destination(buffer.size);
+                got = engine(destination.data(), buffer.size, index, false);
+                Check(std::equal(destination.begin(), destination.end(), replacement.begin() + offset),
+                      "resized buffer differs from the replacement");
+            }
+            Check(got == static_cast<std::int32_t>(buffer.size), "resized read count differs");
+            offset += buffer.size;
+        }
+        Check(offset == replacement.size() && fake_cursor == original.size(),
+              "resized member did not consume exactly the original");
+        std::vector<std::byte> after(next_member.size());
+        Check(engine(after.data(), static_cast<std::uint32_t>(after.size()), index + 1, false) ==
+                  static_cast<std::int32_t>(after.size()) &&
+                  std::equal(after.begin(), after.end(), next_member.begin()),
+              "next member lost its alignment");
+        events = DrainResizeEvents();
+        Check(events.size() == 2 && events[0].model_resize.phase == ModelResizePhase::begin &&
+                  events[0].model_resize.original_verified &&
+                  events[1].model_resize.phase == ModelResizePhase::complete &&
+                  events[1].model_resize.delivered == replacement.size() &&
+                  events[1].model_resize.operations == resize.buffers.size() && g_model_resize_members == 1,
+              "resize begin/complete events differ");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // Moving on after the header: the splice ends, the stream stays aligned.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 10);
+        std::vector<std::byte> header(resize.replacement_header_size), after(next_member.size());
+        Check(engine(header.data(), resize.replacement_header_size, index, false) ==
+                  static_cast<std::int32_t>(resize.replacement_header_size), "resized header not served");
+        Check(engine(after.data(), static_cast<std::uint32_t>(after.size()), index + 1, false) ==
+                  static_cast<std::int32_t>(after.size()) &&
+                  std::equal(after.begin(), after.end(), next_member.begin()),
+              "next member after an incomplete splice lost its alignment");
+        events = DrainResizeEvents();
+        Check(events.size() == 2 && events[1].model_resize.phase == ModelResizePhase::incomplete &&
+                  g_model_resize_failures == 1, "incomplete splice not reported");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // A latched writer fault disables both the patch and the splice.
+        ResetRuntime(); g_writer_faulted = true;
+        g_model_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(1);
+        Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+                  std::equal(block.begin(), block.end(), metadata_block.begin()) && g_model_resize_patched[0] == 0,
+              "faulted writer patched metadata");
+    }
+    g_model_resize_patched.reset();
+#else
+    // Observation builds never patch metadata nor splice members.
+    std::vector<std::byte> block(metadata_block.size());
+    fake_stream.assign(metadata_block.begin(), metadata_block.end()); fake_cursor = 0;
+    g_game_image_base = direct_return - kExpectedResourceReadReturnRva;
+    Check(InvokeEngineFrame(HookStreamRead, block.data(), static_cast<std::int32_t>(block.size()), 0, 0) ==
+              static_cast<std::int32_t>(block.size()) &&
+              std::equal(block.begin(), block.end(), metadata_block.begin()), "observation build changed metadata");
+    static_cast<void>(skip_return); static_cast<void>(index); static_cast<void>(engine); static_cast<void>(replacement);
+    static_cast<void>(resize); static_cast<void>(read_metadata);
+    static_cast<void>(load_stream); static_cast<void>(input);
+#endif
+    g_model_candidates = nullptr; g_model_write_enabled = false;
+    g_original_stream_read = nullptr; g_game_image_base = 0;
+    ResetRuntime();
+    std::cout << "model_resize_runtime: PASS (metadata patch, original-count passthrough, direct/skip splice, alignment, incomplete, fault latch)\n";
 }
 
 void TestAnimationRuntime(const ds2::modding::AnimationCandidate& candidate,

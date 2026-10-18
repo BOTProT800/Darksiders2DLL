@@ -1,6 +1,13 @@
 # Darksiders2DLL
 
-**Código actual: 0.9.2-unchecked-trial.** Una textura DDS o PNG distinta
+**Código actual: 0.10.0-resize-trial.** Con `models=override_unchecked`, una
+malla más grande que la original (con el mismo número de mallas) se entrega a su
+propio tamaño: la DLL reescribe en memoria sus recuentos en los metadatos del
+paquete y sirve el archivo nuevo después de consumir el original del stream.
+Confirmado en el juego con la máscara de `death_head.2` duplicada (de 432 a 864
+vértices) ([investigación, implementación y evidencia](research/MESH_RESIZE_RESEARCH.md)).
+
+**0.9.2-unchecked-trial.** Una textura DDS o PNG distinta
 del original (otro tamaño, mips o formato) se convierte al contrato exacto del
 original y se entrega por la copia del mismo tamaño, la vía confirmada en el
 juego. La subida nativa de la 0.6.0 nunca se activó en el juego y queda como

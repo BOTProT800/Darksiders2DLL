@@ -548,4 +548,182 @@ ModelFitResult FitModelReplacement(const std::span<const std::byte> original,
     }
     return result;
 }
+bool ReadModelEngineCounts(const std::span<const std::byte> model, ModelEngineCounts& counts) noexcept {
+    counts = {};
+    try {
+        if (model.size() < 32 || model.size() > 64ull * 1024 * 1024) return false;
+        Reader r{model};
+        counts.header_size = r.Read<std::uint32_t>();
+        const auto meshes = r.Count();
+        if (meshes == 0 || meshes > 256 || counts.header_size > model.size() || r.Count() != meshes) return false;
+        counts.meshes.resize(meshes);
+        for (auto& mesh : counts.meshes) mesh.indices = r.Count();
+        if (r.Count(true) != meshes) return false;
+        for (auto& mesh : counts.meshes) {
+            mesh.vertices = r.Read<std::int32_t>();
+            if (mesh.vertices < -1'000'000 || mesh.vertices > 1'000'000 || mesh.vertices == 0) return false;
+        }
+        counts.pairs = r.Count(true);
+        if (counts.pairs > meshes) return false;
+        for (std::uint32_t i = 0; i < counts.pairs; ++i) {
+            counts.meshes[i].pair = r.Read<std::int32_t>();
+            r.Skip(4); // float factor, not part of the package metadata
+        }
+        return true;
+    } catch (...) {
+        counts = {};
+        return false;
+    }
+}
+std::vector<ModelEngineBuffer> ModelEngineBuffers(const ModelEngineCounts& counts) {
+    // MeshResourceArray 0x10867AC: sizes are masked to 31 bits by the engine.
+    std::vector<ModelEngineBuffer> buffers{{counts.header_size, false}};
+    const auto add = [&](const std::uint64_t size, const bool skipped = false) {
+        if (size > 0x7FFFFFFFull) throw std::runtime_error("engine buffer exceeds 31 bits");
+        buffers.push_back({static_cast<std::uint32_t>(size), skipped});
+    };
+    for (const auto& mesh : counts.meshes) {
+        if (mesh.indices > 0) {
+            add(8, true); // u32 byte count + u32 stride: registered with a null destination
+            add(mesh.indices * 2ull);
+        }
+        if (mesh.vertices >= 0) {
+            const std::uint64_t n = static_cast<std::uint32_t>(mesh.vertices);
+            add(n * 20); add(n * 52); add(n * 16); add(n * 4);
+            continue;
+        }
+        const std::uint64_t n = static_cast<std::uint64_t>(-static_cast<std::int64_t>(mesh.vertices));
+        if (mesh.pair > 0 || mesh.pair == -1) {
+            add(n * 12); add(n * 48);
+            if (mesh.pair > 0) add(static_cast<std::uint64_t>(mesh.pair) * 16);
+            else add(n * 8);
+        } else if (mesh.pair == -2) {
+            add(n * 4);
+        } else if (mesh.pair == -3) {
+            add(n * 8);
+        } else if (mesh.pair == -4) {
+            add(n * 12);
+        } else {
+            add(n * 12); add(n * 48);
+        }
+    }
+    return buffers;
+}
+std::uint64_t ModelEngineSize(const ModelEngineCounts& counts) noexcept {
+    try {
+        std::uint64_t total = 0;
+        for (const auto& buffer : ModelEngineBuffers(counts)) total += buffer.size;
+        return total;
+    } catch (...) {
+        return 0;
+    }
+}
+std::vector<std::byte> EncodeModelEngineExtra(const ModelEngineCounts& counts) {
+    std::vector<std::byte> extra;
+    const auto put = [&](const std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) extra.push_back(static_cast<std::byte>(value >> shift));
+    };
+    put(counts.header_size);
+    put(static_cast<std::uint32_t>(counts.meshes.size()));
+    put(counts.pairs);
+    for (std::size_t i = 0; i < counts.meshes.size(); ++i) {
+        put(counts.meshes[i].indices);
+        put(static_cast<std::uint32_t>(counts.meshes[i].vertices));
+        if (i < counts.pairs) put(static_cast<std::uint32_t>(counts.meshes[i].pair));
+    }
+    return extra;
+}
+namespace {
+// Header records after the count tables, checked against the engine layout:
+// mesh kind matches the vertex sign, each block starts where the previous
+// engine buffers end, and the records end exactly at the header size.
+void CheckResizedHeader(const std::span<const std::byte> bytes, const ModelEngineCounts& counts) {
+    Reader r{bytes};
+    r.Skip(8 + 4 + counts.meshes.size() * 4ull + 4 + counts.meshes.size() * 4ull + 4 + counts.pairs * 8ull);
+    std::uint64_t block = counts.header_size;
+    for (std::size_t i = 0; i < counts.meshes.size(); ++i) {
+        const auto& mesh = counts.meshes[i];
+        const auto kind = r.Read<std::uint8_t>();
+        const auto n = r.Count();
+        const auto header_stride = r.Count();
+        const auto relative = r.Offset();
+        const auto field3 = r.Count(), field4 = r.Count();
+        const bool skinned = mesh.vertices >= 0;
+        const auto vertices = static_cast<std::uint32_t>(skinned ? mesh.vertices : -static_cast<std::int64_t>(mesh.vertices));
+        if (kind != (skinned ? 1 : 0) || n != vertices || header_stride != (skinned ? 64u : 60u) ||
+            mesh.indices % 3 != 0 || static_cast<std::uint64_t>(counts.header_size) + relative - 8 != block)
+            throw std::runtime_error("mesh record disagrees with its counts or engine offset");
+        for (int k = 0; k < 6; ++k)
+            if (!std::isfinite(r.Read<float>())) throw std::runtime_error("bounds");
+        const auto bones = skinned ? field4 : 0;
+        const auto materials = skinned ? field3 : field4;
+        if (bones > 256 || materials > 4096) throw std::runtime_error("references");
+        for (std::uint32_t b = 0; b < bones; ++b) {
+            r.Skip(1);
+            const auto length = r.Read<std::uint16_t>();
+            if (length == 0 || length > 4096) throw std::runtime_error("bone name");
+            r.Skip(length);
+            for (int f = 0; f < 16; ++f)
+                if (!std::isfinite(r.Read<float>())) throw std::runtime_error("bind matrix");
+            r.Skip(4);
+        }
+        for (std::uint32_t m = 0; m < materials; ++m) {
+            const bool named = r.Read<std::uint8_t>() == 255;
+            if (named) {
+                const auto length = r.Read<std::uint16_t>();
+                if (length == 0 || length > 4096) throw std::runtime_error("material name");
+                r.Skip(length);
+            }
+            r.Skip(named ? 24 : 20);
+        }
+        ModelEngineCounts one{0, i < counts.pairs ? 1u : 0u, {mesh}};
+        block += ModelEngineSize(one);
+    }
+    if (r.cursor != counts.header_size) throw std::runtime_error("header records do not end at the header size");
+    // Index buffers: the prefix the engine skips, and indices inside the mesh.
+    block = counts.header_size;
+    for (std::size_t i = 0; i < counts.meshes.size(); ++i) {
+        const auto& mesh = counts.meshes[i];
+        if (mesh.indices > 0) {
+            Reader data{bytes, static_cast<std::size_t>(block)};
+            const auto vertices = static_cast<std::uint32_t>(mesh.vertices >= 0 ? mesh.vertices : -static_cast<std::int64_t>(mesh.vertices));
+            if (data.Read<std::uint32_t>() != mesh.indices * 2 || data.Read<std::uint32_t>() != 2)
+                throw std::runtime_error("index format");
+            for (std::uint32_t j = 0; j < mesh.indices; ++j)
+                if (data.Read<std::uint16_t>() >= vertices) throw std::runtime_error("index range");
+        }
+        ModelEngineCounts one{0, i < counts.pairs ? 1u : 0u, {mesh}};
+        block += ModelEngineSize(one);
+    }
+}
+}
+ModelResizePlan PlanModelResize(const std::span<const std::byte> original, const std::span<const std::byte> replacement,
+                                const std::span<const std::byte> original_extra) {
+    ModelResizePlan plan;
+    try {
+        ModelEngineCounts before, after;
+        if (!ReadModelEngineCounts(original, before) || ModelEngineSize(before) != original.size())
+            throw std::runtime_error("original layout is outside the engine model");
+        const auto expected = EncodeModelEngineExtra(before);
+        if (!std::equal(expected.begin(), expected.end(), original_extra.begin(), original_extra.end()))
+            throw std::runtime_error("package metadata does not repeat the original header counts");
+        if (!ReadModelEngineCounts(replacement, after))
+            throw std::runtime_error("replacement count tables are invalid");
+        if (after.meshes.size() != before.meshes.size() || after.pairs != before.pairs)
+            throw std::runtime_error("mesh or pair count changed: the package metadata entry would change length");
+        if (ModelEngineSize(after) != replacement.size() || replacement.size() > 0x7FFFFFFFull)
+            throw std::runtime_error("replacement bytes differ from the engine buffers of its own counts");
+        CheckResizedHeader(replacement, after);
+        plan.extra = EncodeModelEngineExtra(after);
+        plan.buffers = ModelEngineBuffers(after);
+        plan.original_header_size = before.header_size;
+        plan.replacement_header_size = after.header_size;
+        if (plan.extra.size() != original_extra.size()) throw std::runtime_error("metadata length changed");
+    } catch (const std::exception& error) {
+        plan = {};
+        const std::string reason = error.what();
+        plan.error.assign(reason.begin(), reason.end());
+    }
+    return plan;
+}
 }

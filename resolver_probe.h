@@ -46,6 +46,7 @@ enum class ResolverProbeState {
 
 enum class ResolverProbeEventKind {
     model_read,
+    model_resize,
     animation_read,
     stream_first_entry,
     package_segment_read,
@@ -80,6 +81,24 @@ struct GeneralDdsDryRunProbeEvent final {
 static_assert(std::is_trivially_copyable_v<GeneralDdsDryRunProbeEvent>);
 #endif
 
+// A resized model: metadata entry rewritten, member delivered at its own size.
+enum class ModelResizePhase : std::uint8_t {
+    metadata_patched,
+    metadata_failed,
+    begin,
+    complete,
+    incomplete,
+    failed,
+};
+struct ModelResizeProbeEvent final {
+    ModelResizePhase phase{ModelResizePhase::failed};
+    PackageResourceIdentity identity{};
+    bool replacement_source{};  // false: the engine kept the original counts
+    bool original_verified{};
+    std::uint32_t original_size{}, source_size{}, delivered{}, operations{}, first_request{};
+    std::uint32_t win32_error{};
+};
+static_assert(std::is_trivially_copyable_v<ModelResizeProbeEvent>);
 struct ResolverProbeEvent final {
     ResolverProbeEventKind kind{ResolverProbeEventKind::stream_sample};
     ResolverSampleKind sample_kind{ResolverSampleKind::none};
@@ -104,6 +123,7 @@ struct ResolverProbeEvent final {
     bool animation_range_matched{};
     bool animation_range_changed{};
     std::uint32_t animation_offset{};
+    ModelResizeProbeEvent model_resize{};
     std::uint16_t frame_count{};
     std::array<std::uintptr_t, kResolverProbeMaxFrames> frames{};
     std::uint32_t sample_size{};
@@ -135,6 +155,7 @@ struct ResolverProbeStatus final {
 
 struct ResolverProbeStats final {
     std::uint64_t model_reads{}, model_matches{}, model_write_attempts{}, model_writes{}, model_failures{};
+    std::uint64_t model_resize_metadata_patches{}, model_resize_members{}, model_resize_failures{};
     std::uint64_t animation_reads{}, animation_matches{};
     std::uint64_t read_file_calls{};
     std::uint64_t package_segment_reads{};

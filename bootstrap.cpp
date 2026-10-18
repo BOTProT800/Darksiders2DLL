@@ -166,6 +166,38 @@ namespace
                     : L"MODEL_READ_UNMATCHED"), detail);
             return;
         }
+        if (event.kind == ds2::modding::ResolverProbeEventKind::model_resize) {
+            using ds2::modding::ModelResizePhase;
+            const auto& resize = event.model_resize;
+            const auto models = g_model_candidates.load(std::memory_order_acquire);
+            const auto* candidate = models ? models->Find(resize.identity) : nullptr;
+            detail.append(L" member_ordinal=" + std::to_wstring(resize.identity.member_ordinal));
+            detail.append(L" package_base="); AppendHex(detail, resize.identity.package_base);
+            detail.append(L" member_table_offset="); AppendHex(detail, resize.identity.member_table_offset);
+            detail.append(L" original_bytes=" + std::to_wstring(resize.original_size));
+            detail.append(L" replacement_bytes=" + std::to_wstring(resize.source_size));
+            if (resize.phase != ModelResizePhase::metadata_patched && resize.phase != ModelResizePhase::metadata_failed) {
+                detail.append(L" first_request=" + std::to_wstring(resize.first_request));
+                detail.append(L" original_verified="); detail.append(BoolName(resize.original_verified));
+                detail.append(L" delivered=" + std::to_wstring(resize.delivered));
+                detail.append(L" operations=" + std::to_wstring(resize.operations));
+            }
+            detail.append(L" win32=" + std::to_wstring(resize.win32_error));
+            if (candidate) detail.append(L" path=" + candidate->virtual_path.key);
+            const wchar_t* name = L"MODEL_RESIZE_FAILED";
+            switch (resize.phase) {
+            case ModelResizePhase::metadata_patched: name = L"MODEL_RESIZE_METADATA_PATCHED"; break;
+            case ModelResizePhase::metadata_failed: name = L"MODEL_RESIZE_METADATA_FAILED"; break;
+            case ModelResizePhase::begin: name = L"MODEL_RESIZE_BEGIN"; break;
+            case ModelResizePhase::complete: name = L"MODEL_RESIZE_COMPLETE"; break;
+            case ModelResizePhase::incomplete: name = L"MODEL_RESIZE_INCOMPLETE"; break;
+            case ModelResizePhase::failed: break;
+            }
+            if (resize.phase != ModelResizePhase::metadata_patched && resize.phase != ModelResizePhase::complete)
+                AppendResolverStack(detail, event);
+            LogEvent(name, detail);
+            return;
+        }
         if (event.kind == ds2::modding::ResolverProbeEventKind::animation_read) {
             const auto& sample = event.resource_identity;
             const ds2::modding::PackageResourceIdentity identity{sample.scope.package_base,
@@ -409,6 +441,9 @@ namespace
         return left.model_reads == right.model_reads && left.model_matches == right.model_matches &&
             left.model_write_attempts == right.model_write_attempts && left.model_writes == right.model_writes &&
             left.model_failures == right.model_failures &&
+            left.model_resize_metadata_patches == right.model_resize_metadata_patches &&
+            left.model_resize_members == right.model_resize_members &&
+            left.model_resize_failures == right.model_resize_failures &&
             left.animation_reads == right.animation_reads &&
             left.animation_matches == right.animation_matches &&
             left.read_file_calls == right.read_file_calls &&
@@ -506,6 +541,9 @@ namespace
         detail.append(L" model_write_attempts=" + std::to_wstring(stats.model_write_attempts));
         detail.append(L" model_writes=" + std::to_wstring(stats.model_writes));
         detail.append(L" model_failures=" + std::to_wstring(stats.model_failures));
+        detail.append(L" model_resize_metadata_patches=" + std::to_wstring(stats.model_resize_metadata_patches));
+        detail.append(L" model_resize_members=" + std::to_wstring(stats.model_resize_members));
+        detail.append(L" model_resize_failures=" + std::to_wstring(stats.model_resize_failures));
         detail.append(L" animation_reads=" + std::to_wstring(stats.animation_reads));
         detail.append(L" animation_matches=" + std::to_wstring(stats.animation_matches));
         LogEvent(L"RESOLVER_PROBE_STATS", detail);
@@ -931,7 +969,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.9.2-unchecked-trial mode=asset_loader");
+            LogEvent(L"SESSION_START", L"version=0.10.0-resize-trial mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";
@@ -1031,7 +1069,13 @@ namespace
                             detail.append(L" removed_vertices=" + std::to_wstring(candidate.removed_vertices));
                             detail.append(L" removed_triangles=" + std::to_wstring(candidate.removed_triangles));
                         }
-                        if (candidate.unchecked_fit) {
+                        if (candidate.resize) {
+                            detail.append(L" resize=true mod_bytes=" + std::to_wstring(candidate.mod_bytes));
+                            detail.append(L" original_header=" + std::to_wstring(candidate.resize->original_header_size));
+                            detail.append(L" replacement_header=" + std::to_wstring(candidate.resize->replacement_header_size));
+                            detail.append(L" buffers=" + std::to_wstring(candidate.resize->buffers.size()));
+                            detail.append(L" metadata_bytes=" + std::to_wstring(candidate.resize->metadata_size));
+                        } else if (candidate.unchecked_fit) {
                             detail.append(L" unchecked_fit=true mod_bytes=" + std::to_wstring(candidate.mod_bytes));
                             detail.append(L" spare_vertices=" + std::to_wstring(candidate.spare_vertices));
                             detail.append(L" collapsed_triangles=" + std::to_wstring(candidate.collapsed_triangles));

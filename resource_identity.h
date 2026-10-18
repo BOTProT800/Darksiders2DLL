@@ -120,6 +120,9 @@ public:
 
     void Reset() noexcept;
 
+    // The innermost tracked scope without recording a read; null when there
+    // is none or an overflow is being suppressed.
+    [[nodiscard]] const ResourceIdentityScopeInput* ActiveScope() const noexcept;
     [[nodiscard]] std::size_t ActiveDepth() const noexcept;
     [[nodiscard]] std::size_t SuppressedDepth() const noexcept;
     [[nodiscard]] bool Empty() const noexcept;

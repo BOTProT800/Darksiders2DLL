@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sha256.h"
 #include "virtual_path.h"
 
 #include <cstddef>
@@ -36,6 +37,13 @@ struct PackageIdentityEntry final {
     // uses the segment's payload/table offset observed on the runtime owner.
     std::uint32_t block_offset{};
     std::uint64_t block_end{};
+    // The metadata block the engine reads in one call (0x9FED44): offset and
+    // size relative to package_base, its SHA-256, and this member's extra
+    // counts inside it (offset relative to the block).
+    std::uint32_t metadata_offset{}, metadata_size{};
+    Sha256Digest metadata_sha256{};
+    std::uint32_t extra_offset{};
+    std::vector<std::byte> extra;
 };
 
 enum class PackageIdentityCatalogError {

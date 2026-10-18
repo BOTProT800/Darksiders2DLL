@@ -103,6 +103,10 @@ void ResourceIdentityThreadContext::Reset() noexcept {
     suppressed_depth_ = 0;
 }
 
+const ResourceIdentityScopeInput* ResourceIdentityThreadContext::ActiveScope() const noexcept {
+    return suppressed_depth_ == 0 && depth_ != 0 ? &frames_[depth_ - 1].input : nullptr;
+}
+
 std::size_t ResourceIdentityThreadContext::ActiveDepth() const noexcept {
     return depth_;
 }

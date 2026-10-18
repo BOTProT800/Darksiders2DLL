@@ -777,10 +777,13 @@ bool Fail(
     }
 
     std::vector<std::uint32_t> member_sizes(file_count);
-    for (auto& member_size : member_sizes) {
+    std::vector<std::pair<std::size_t, std::uint32_t>> extras(file_count);
+    for (std::size_t index = 0; index < member_sizes.size(); ++index) {
+        auto& member_size = member_sizes[index];
         std::uint32_t extra_size = 0;
-        if (!reader.ReadU32(member_size) ||
-            !reader.ReadU32(extra_size) ||
+        const bool header_read = reader.ReadU32(member_size) && reader.ReadU32(extra_size);
+        extras[index] = {reader.Position(), extra_size};
+        if (!header_read ||
             !reader.Skip(extra_size) ||
             reader.Position() > final_table_offset) {
             return Fail(
@@ -807,6 +810,14 @@ bool Fail(
 
     const bool sizes_match = std::equal(
         member_sizes.begin(), member_sizes.end(), final_values.begin());
+    // The engine reads [names_end, names_end + metadata_size) in one call.
+    const auto metadata_block = std::span<const std::byte>(metadata).subspan(names_end, metadata_size);
+    const auto metadata_hash = ComputeSha256(metadata_block);
+    if (!metadata_hash) {
+        return Fail(
+            result, PackageIdentityCatalogError::invalid_package,
+            metadata_hash.win32_error, L"cannot hash requested OBPK metadata");
+    }
 
     std::uint64_t total_uncompressed_size = 0;
     for (const auto member_size : member_sizes) {
@@ -937,7 +948,13 @@ bool Fail(
                         type_ids[index],
                         member_blocks ? final_values[index] : 0,
                         member_blocks ? (index + 1 < final_values.size()
-                            ? final_values[index + 1] : segment.size) : 0});
+                            ? final_values[index + 1] : segment.size) : 0,
+                        names_end,
+                        metadata_size,
+                        metadata_hash.digest,
+                        static_cast<std::uint32_t>(extras[index].first - names_end),
+                        std::vector<std::byte>(metadata.begin() + static_cast<std::ptrdiff_t>(extras[index].first),
+                            metadata.begin() + static_cast<std::ptrdiff_t>(extras[index].first + extras[index].second))});
                 }
             }
         }

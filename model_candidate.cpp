@@ -44,7 +44,26 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
     std::uint32_t removed_vertices = 0, removed_triangles = 0, spare_vertices = 0, collapsed_triangles = 0;
     if (contract == ModelEditContract::unchecked) {
         auto fitted = FitModelReplacement(original, storage->Bytes());
-        if (!fitted) { error = L"unchecked: " + fitted.error; return false; }
+        if (!fitted) {
+            // Beyond the original read sizes: deliver it at its own size.
+            auto plan = PlanModelResize(original, storage->Bytes(), entry.extra);
+            if (!plan || entry.metadata_size == 0 || plan.extra.size() != entry.extra.size() ||
+                entry.extra_offset > entry.metadata_size ||
+                plan.extra.size() > entry.metadata_size - entry.extra_offset) {
+                error = L"unchecked: " + fitted.error + L"; resize: " +
+                        (plan ? std::wstring(L"package metadata entry unavailable") : plan.error);
+                return false;
+            }
+            const auto original_hash = ComputeSha256(original);
+            if (!original_hash) { error = L"resize: original hash failed"; return false; }
+            candidate = ModelCandidate{entry.identity, entry.virtual_path, asset.mod_id, storage, {},
+                                       storage->Size(), 0, 0, true, 0, 0,
+                                       ModelResize{entry.metadata_size, entry.extra_offset, entry.metadata_sha256,
+                                                   std::move(plan.extra), std::move(plan.buffers),
+                                                   plan.original_header_size, plan.replacement_header_size,
+                                                   static_cast<std::uint32_t>(original.size()), original_hash.digest}};
+            return true;
+        }
         spare_vertices = fitted.spare_vertices;
         collapsed_triangles = fitted.collapsed_triangles;
         auto rebuilt = MakeByteStorage(std::move(fitted.bytes));

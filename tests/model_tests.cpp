@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 using namespace ds2::modding;
@@ -29,22 +30,26 @@ using Triangles = std::vector<std::array<std::uint16_t, 3>>;
 // One skinned mesh with one named material. Every record derives from its
 // source vertex id, so a pruned copy keeps the surviving records byte-identical,
 // as Anansi prune_dcm does.
-std::vector<std::byte> MakeSkinnedModel(const std::vector<std::uint32_t>& ids, const Triangles& triangles) {
+// A longer material name changes the header size (101 bytes with one letter).
+std::vector<std::byte> MakeSkinnedModel(const std::vector<std::uint32_t>& ids, const Triangles& triangles,
+                                        const std::string_view material = "M") {
     const auto n = static_cast<std::uint32_t>(ids.size());
     const auto ic = static_cast<std::uint32_t>(triangles.size() * 3);
-    const std::size_t data = 101, records = data + 8 + ic * 2ull;
+    const std::size_t name = material.size(), fields = 76 + name;
+    const std::size_t data = fields + 24, records = data + 8 + ic * 2ull;
     std::vector<std::byte> bytes(records + n * 92ull);
     Put(bytes, 0, static_cast<std::uint32_t>(data)); Put(bytes, 4, 1u); Put(bytes, 8, 1u);
     Put(bytes, 12, ic); Put(bytes, 16, 1u); Put(bytes, 20, n);
     bytes[28] = std::byte{1};
     Put(bytes, 29, n); Put(bytes, 33, 64u); Put(bytes, 37, 8u); Put(bytes, 41, 1u);
     for (std::size_t axis = 0; axis < 3; ++axis) Put(bytes, 61 + axis * 4, 4.0f);
-    bytes[73] = std::byte{255}; Put(bytes, 74, std::uint16_t{1}); bytes[76] = std::byte{'M'};
+    bytes[73] = std::byte{255}; Put(bytes, 74, static_cast<std::uint16_t>(name));
+    for (std::size_t c = 0; c < name; ++c) bytes[76 + c] = static_cast<std::byte>(material[c]);
     std::uint16_t low = 0xFFFF, high = 0;
     for (const auto& triangle : triangles)
         for (const auto v : triangle) { low = (std::min)(low, v); high = (std::max)(high, v); }
-    Put(bytes, 85, static_cast<std::uint32_t>(high - low + 1)); Put(bytes, 89, std::uint32_t{low});
-    Put(bytes, 93, ic);
+    Put(bytes, fields + 8, static_cast<std::uint32_t>(high - low + 1)); Put(bytes, fields + 12, std::uint32_t{low});
+    Put(bytes, fields + 16, ic);
     Put(bytes, data, ic * 2); Put(bytes, data + 4, 2u);
     for (std::size_t t = 0; t < triangles.size(); ++t)
         for (std::size_t k = 0; k < 3; ++k) Put(bytes, data + 8 + (t * 3 + k) * 2, triangles[t][k]);
@@ -123,6 +128,86 @@ void TestModelDeletion(const std::filesystem::path& temporary_root) {
             "deletion index range missing");
 #if defined(DS2_TEST_GENERAL_RESOLVER_RUNTIME)
     TestModelRuntime(candidate, original);
+#endif
+}
+void TestModelResize(const std::filesystem::path& temporary_root) {
+    // The engine model (MeshResourceArray 0x10867AC) on the synthetic layout.
+    const auto original = MakeSkinnedModel({0, 1, 2, 3, 4}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}});
+    ModelEngineCounts counts;
+    Require(ReadModelEngineCounts(original, counts) && counts.header_size == 101 && counts.pairs == 0 &&
+            counts.meshes.size() == 1 && counts.meshes[0].indices == 9 && counts.meshes[0].vertices == 5,
+            "engine counts misread");
+    const std::vector<ModelEngineBuffer> expected_buffers{{101, false}, {8, true}, {18, false},
+                                                          {100, false}, {260, false}, {80, false}, {20, false}};
+    Require(ModelEngineBuffers(counts) == expected_buffers && ModelEngineSize(counts) == original.size(),
+            "engine buffer list differs from the skinned layout");
+    const auto extra = EncodeModelEngineExtra(counts);
+    std::vector<std::byte> expected_extra(20);
+    Put(expected_extra, 0, 101u); Put(expected_extra, 4, 1u); Put(expected_extra, 8, 0u);
+    Put(expected_extra, 12, 9u); Put(expected_extra, 16, 5u);
+    Require(extra == expected_extra, "engine metadata encoding differs");
+    // Static meshes (7 vertices, no indices): the pair integer picks the arrays.
+    for (const auto& [pair, bytes] : std::array<std::pair<std::int32_t, std::uint64_t>, 6>{{
+             {3, 468}, {-1, 476}, {-2, 28}, {-3, 56}, {-4, 84}, {0, 420}}}) {
+        const ModelEngineCounts statics{0, 1, {{0, -7, pair}}};
+        Require(ModelEngineSize(statics) == bytes, "static engine layout differs");
+    }
+
+    // 12 vertices and 8 triangles do not fit the 5/3 slot; the header grows too.
+    const auto larger = MakeSkinnedModel({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+        {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}, {4, 5, 6}, {6, 7, 8}, {8, 9, 10}, {9, 10, 11}, {0, 5, 11}}, "Mask");
+    Require(!FitModelReplacement(original, larger), "larger mesh fitted into the original slot");
+    const auto plan = PlanModelResize(original, larger, extra);
+    ModelEngineCounts larger_counts;
+    Require(bool(plan) && ReadModelEngineCounts(larger, larger_counts) &&
+            plan.extra == EncodeModelEngineExtra(larger_counts) && plan.buffers == ModelEngineBuffers(larger_counts) &&
+            plan.original_header_size == 101 && plan.replacement_header_size == 104 && plan.extra.size() == extra.size(),
+            "larger mesh resize rejected");
+    // The package entry must repeat the original header, the replacement must
+    // span exactly its engine buffers, indices stay inside the mesh, and the
+    // record kind follows the vertex sign.
+    auto wrong_extra = extra; wrong_extra[12] ^= std::byte{1};
+    Require(!PlanModelResize(original, larger, wrong_extra), "metadata schema mismatch accepted");
+    auto longer = larger; longer.push_back(std::byte{});
+    Require(!PlanModelResize(original, longer, extra), "trailing replacement bytes accepted");
+    auto bad_index = larger; Put(bad_index, 104 + 8, std::uint16_t{12});
+    Require(!PlanModelResize(original, bad_index, extra), "index outside the mesh accepted");
+    auto wrong_kind = larger; wrong_kind[28] = std::byte{0};
+    Require(!PlanModelResize(original, wrong_kind, extra), "record kind against the vertex sign accepted");
+
+    // Package metadata block: unrelated entries, this member's, a final table.
+    std::vector<std::byte> block(24);
+    Put(block, 16, static_cast<std::uint32_t>(original.size()));
+    Put(block, 20, static_cast<std::uint32_t>(extra.size()));
+    block.insert(block.end(), extra.begin(), extra.end());
+    block.resize(block.size() + 4);
+    Put(block, block.size() - 4, static_cast<std::uint32_t>(original.size()));
+    const auto mods_path = temporary_root / L"resize-models";
+    Write(mods_path / L"big/media/characters/fixture.2", larger);
+    ModIndexOptions options; options.dds_only = true; options.include_native_models = true;
+    const auto mods = BuildModIndex(mods_path, options);
+    Require(mods && mods.snapshot->Assets().size() == 1, "resize fixture not indexed");
+    const auto& asset = mods.snapshot->Assets().front();
+    PackageIdentityEntry entry;
+    entry.identity = {0x123400, 0x40, 223};
+    entry.virtual_path = asset.virtual_path;
+    entry.type_id = 2; entry.original_size = static_cast<std::uint32_t>(original.size());
+    entry.metadata_size = static_cast<std::uint32_t>(block.size());
+    entry.metadata_sha256 = ComputeSha256(block).digest;
+    entry.extra_offset = 24; entry.extra = extra;
+    ModelCandidate candidate; std::wstring error;
+    Require(PrepareModelCandidate(entry, asset, original, candidate, error, ModelEditContract::unchecked) &&
+            candidate.resize && candidate.ranges.empty() && std::ranges::equal(candidate.storage->Bytes(), larger) &&
+            candidate.resize->extra == plan.extra && candidate.resize->extra_offset == 24 &&
+            candidate.resize->original_size == original.size() &&
+            candidate.resize->metadata_sha256 == entry.metadata_sha256, "resize candidate rejected");
+    auto no_metadata = entry; no_metadata.metadata_size = 0;
+    ModelCandidate rejected;
+    Require(!PrepareModelCandidate(no_metadata, asset, original, rejected, error, ModelEditContract::unchecked),
+            "resize without a package metadata entry accepted");
+#if defined(DS2_TEST_GENERAL_RESOLVER_RUNTIME)
+    const std::vector<std::byte> next_member(64, std::byte{0xAB});
+    TestModelResizeRuntime(candidate, original, block, next_member);
 #endif
 }
 void TestModelUncheckedFit(const std::filesystem::path& temporary_root) {
@@ -316,6 +401,7 @@ void TestModels(const std::filesystem::path& temporary_root) {
     }
     TestModelDeletion(temporary_root);
     TestModelUncheckedFit(temporary_root);
+    TestModelResize(temporary_root);
     Require(ParseLoaderConfig("[loader]").config.models == ModelMode::off, "models default on");
     for (const auto* value : {"off", "observe", "override_positions", "override_shape", "override_unchecked"}) {
         const auto cfg = ParseLoaderConfig(std::string("[loader]\nmodels=") + value);
@@ -347,7 +433,26 @@ int CheckModelFiles(const std::filesystem::path& original, const std::filesystem
     ModelFitResult fit;
     if (unchecked) {
         fit = FitModelReplacement(before.storage->Bytes(), after.storage->Bytes());
-        if (!fit) { std::wcerr << L"MODEL_REJECTED: unchecked: " << fit.error << L'\n'; return 1; }
+        if (!fit) {
+            // Larger than the slot: the package entry repeats the original
+            // header counts (checked against the installed package by the catalog).
+            ModelEngineCounts counts;
+            const auto plan = ReadModelEngineCounts(before.storage->Bytes(), counts)
+                ? PlanModelResize(before.storage->Bytes(), after.storage->Bytes(), EncodeModelEngineExtra(counts))
+                : ModelResizePlan{{}, {}, 0, 0, L"original count tables are invalid"};
+            if (!plan) {
+                std::wcerr << L"MODEL_REJECTED: unchecked: " << fit.error << L"; resize: " << plan.error << L'\n';
+                return 1;
+            }
+            std::wcout << L"MODEL_CHECK_PASS contract=unchecked route=resize original_bytes=" << before.storage->Size()
+                       << L" replacement_bytes=" << modified_size
+                       << L" original_header=" << plan.original_header_size
+                       << L" replacement_header=" << plan.replacement_header_size
+                       << L" buffers=" << plan.buffers.size()
+                       << L"\noriginal_sha256=" << before.storage->Sha256Hex()
+                       << L"\nmodified_sha256=" << modified_hash << L'\n';
+            return 0;
+        }
         after = MakeByteStorage(fit.bytes);
         if (!after) { std::wcerr << L"MODEL_CHECK_FAILED: fitted storage\n"; return 1; }
         if (!expanded.empty()) Write(expanded, after.storage->Bytes());
@@ -402,7 +507,14 @@ int CheckModelCatalog(const std::filesystem::path& game, const std::filesystem::
             std::wcout << L" deletion_expanded=true mod_bytes=" << entry.mod_bytes
                        << L" removed_vertices=" << entry.removed_vertices
                        << L" removed_triangles=" << entry.removed_triangles;
-        if (entry.unchecked_fit)
+        if (entry.resize)
+            std::wcout << L" resize=true mod_bytes=" << entry.mod_bytes
+                       << L" original_header=" << entry.resize->original_header_size
+                       << L" replacement_header=" << entry.resize->replacement_header_size
+                       << L" buffers=" << entry.resize->buffers.size()
+                       << L" metadata_bytes=" << entry.resize->metadata_size
+                       << L" extra_offset=" << entry.resize->extra_offset;
+        else if (entry.unchecked_fit)
             std::wcout << L" unchecked_fit=true mod_bytes=" << entry.mod_bytes
                        << L" spare_vertices=" << entry.spare_vertices
                        << L" collapsed_triangles=" << entry.collapsed_triangles;
