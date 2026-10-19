@@ -1,6 +1,18 @@
 # Darksiders2DLL
 
-**Código actual: 0.10.0-resize-trial.** Con `models=override_unchecked`, una
+**Código actual: 0.11.0-texture-resize-trial.** Con `textures=resize`, una
+textura DDS o PNG de otro tamaño, formato o número de mips (por ejemplo
+512×1024 o 2048² en lugar de un original de 1024²) llega al motor tal cual, sin
+convertirla al contrato original: la DLL reescribe en memoria su `extra` de
+7 bytes en los metadatos del paquete y sirve el payload nuevo después de
+consumir el original. Si el parche no llega al motor, se usa la conversión de la
+0.9.2. Pendiente de probar en el juego
+([investigación e implementación](research/TEXTURE_RESIZE_RESEARCH.md),
+[uso](distribution/TEXTURAS_HD.md)). La investigación muestra además que el
+juego usa el renderer D3D9 salvo con `-dx11`, por lo que la subida nativa D3D11
+de la 0.6.0 no podía activarse.
+
+**0.10.0-resize-trial.** Con `models=override_unchecked`, una
 malla más grande que la original (con el mismo número de mallas) se entrega a su
 propio tamaño: la DLL reescribe en memoria sus recuentos en los metadatos del
 paquete y sirve el archivo nuevo después de consumir el original del stream.

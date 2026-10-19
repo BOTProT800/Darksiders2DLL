@@ -1,4 +1,51 @@
-# Texturas HD y PNG — 0.6.0-texture-trial
+# Texturas HD y PNG
+
+## Tamaño propio: `textures=resize` (0.11.0-texture-resize-trial)
+
+Con `textures=resize` en `[loader]`, un DDS o PNG de otro tamaño, formato o
+número de mips se entrega al motor tal cual: una textura de 1024 × 1024 puede
+sustituirse por una de 512 × 1024 o de 2048 × 2048, sin reescalarla al original.
+La DLL reescribe en memoria el `extra` de la textura en los metadatos del
+paquete (el motor dimensiona la textura con él) y sirve los datos nuevos después
+de consumir los originales. Los `.upak` no se modifican.
+[Detalles técnicos](../research/TEXTURE_RESIZE_RESEARCH.md).
+
+```ini
+[loader]
+enabled=true
+mode=override
+textures=resize
+```
+
+Requisitos del archivo:
+
+- DDS tradicional (sin cabecera DX10) en BGRA8, BC1/DXT1, BC2/DXT3 o BC3/DXT5,
+  o un PNG (se convierte a BGRA8 con todos sus mips). Solo texturas 2D.
+- Hasta 16384 por lado; en BC1/BC2/BC3, lados múltiplos de 4.
+- Cualquier número de mips entre 1 y la cadena completa.
+- El presupuesto de 64 MiB por asset y 256 MiB en total se mantiene.
+
+Cada candidato del log indica `resize=ANCHOxALTO/FORMATO/mips=N`, o
+`resize_error="…"` con el motivo si no se puede entregar a su tamaño. En ese caso
+se usa la conversión al contrato original (0.9.2), igual que con
+`textures=native`. En la sesión busca:
+
+- `TEXTURE_RESIZE_METADATA_PATCHED`: el motor leyó los metadatos y se reescribió
+  el `extra`.
+- `TEXTURE_RESIZE_BEGIN ... original_verified=true` y
+  `TEXTURE_RESIZE_COMPLETE delivered=…`: la textura se entregó entera a su tamaño.
+- `TEXTURE_RESIZE_METADATA_DECLINED`: el juego recorta mips
+  (`[Resources] MaxMipLevels` o `[Renderer] TextureDetail`) y se usó la conversión.
+- Sin `TEXTURE_RESIZE_*`, el juego no leyó los metadatos después de instalarse
+  la DLL: también se usa la conversión.
+
+`offline_tests.exe --texture-catalog-resize CARPETA_JUEGO CARPETA_MODS` comprueba
+los planes contra el `media.upak` instalado sin modificarlo.
+
+## Subida nativa (0.6.0-texture-trial)
+
+La subida nativa de esta sección usa el renderer D3D11, que el juego solo activa
+con `-dx11`; con el renderer por defecto (D3D9) no llega a usarse.
 
 La DLL admite DDS de dimensiones distintas al original y PNG rectangulares.
 Por ejemplo, una textura original de 512 × 512 puede tener un reemplazo de

@@ -12,6 +12,8 @@ struct LoaderConfig final {
     bool enabled{true};
     bool write_enabled{true};
     bool native_textures{true};
+    // textures=resize: native, plus delivery at the texture's own size.
+    bool resize_textures{false};
     ModelMode models{ModelMode::off};
     AnimationMode animations{AnimationMode::off};
 };

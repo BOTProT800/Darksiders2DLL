@@ -12,7 +12,7 @@ std::string_view Trim(std::string_view text) {
 }
 LoaderConfigResult ParseLoaderConfig(std::string_view text) {
     LoaderConfigResult result;
-    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact, models=off|observe|override_positions|override_shape|override_unchecked, animations=off|observe|override_keys";
+    result.error = L"invalid INI: expected [loader], enabled=true|false, mode=override|observe, textures=native|exact|resize, models=off|observe|override_positions|override_shape|override_unchecked, animations=off|observe|override_keys";
     if (text.empty() || text.size() > 16 * 1024) return result;
     for (const unsigned char c : text) {
         if ((c < 32 && c != '\t' && c != '\r' && c != '\n') || c > 126) return result;
@@ -42,8 +42,9 @@ LoaderConfigResult ParseLoaderConfig(std::string_view text) {
             result.config.write_enabled = value == "override";
             mode = true;
         } else if (key == "textures" && !textures) {
-            if (value != "native" && value != "exact") return result;
-            result.config.native_textures = value == "native";
+            if (value != "native" && value != "exact" && value != "resize") return result;
+            result.config.native_textures = value != "exact";
+            result.config.resize_textures = value == "resize";
             textures = true;
         } else if (key == "models" && !models) {
             if (value == "off") result.config.models = ModelMode::off;

@@ -5,11 +5,13 @@
 #include "mod_index.h"
 #include "package_dds_contract.h"
 #include "package_identity_catalog.h"
+#include "texture_resize.h"
 #include "virtual_path.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -41,6 +43,10 @@ struct GeneralDdsCandidate final {
     bool converted{};
     DdsMetadata source_dds;
     std::wstring conversion_error;
+    // textures=resize: the mod file at its own size. Taken only when the
+    // engine read the patched metadata; the route above stays the fallback.
+    std::optional<TextureResize> resize;
+    std::wstring resize_error;
 };
 
 enum class GeneralDdsCandidateIssueCode {
@@ -78,6 +84,9 @@ struct GeneralDdsCandidateOptions final {
     // With allow_native_upload, first convert a different texture to the
     // original contract so it takes the same-size stream route.
     bool convert_to_original{true};
+    // With allow_native_upload, also plan the delivery at the texture's own
+    // size (research/TEXTURE_RESIZE_RESEARCH.md).
+    bool resize_textures{false};
 };
 
 struct GeneralDdsCandidateBuildResult;

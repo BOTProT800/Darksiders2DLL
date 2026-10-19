@@ -9,6 +9,8 @@ param(
     [string]$UncheckedModelModsDirectory = '',
     [string]$AnimationModsDirectory = '',
     [string]$AnimationCorpusDirectory = '',
+    # Texture mods of another size or format: each must get a textures=resize plan.
+    [string[]]$TextureModsDirectory = @(),
     [ValidatePattern('^[A-Za-z0-9.-]+$')]
     [string]$EvidenceName = 'validation-release-0.4'
 )
@@ -75,6 +77,10 @@ foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release'
     }
     if ($AnimationCorpusDirectory) {
         Run "$($test[0])-animation-corpus" (Join-Path $dir 'offline_tests.exe') @('--anim-corpus', $AnimationCorpusDirectory)
+    }
+    for ($i = 0; $i -lt $TextureModsDirectory.Count; $i++) {
+        if (!$GameDirectory) { throw 'TextureModsDirectory requiere GameDirectory.' }
+        Run "$($test[0])-textures-resize-$i" (Join-Path $dir 'offline_tests.exe') @('--texture-catalog-resize', $GameDirectory, $TextureModsDirectory[$i])
     }
 }
 $a = Build 'release-a' 'Darksiders2DLL.vcxproj' 'Release'

@@ -2,6 +2,7 @@
 #include "native_texture.h"
 #include "png_texture.h"
 #include "texture_convert.h"
+#include "texture_resize.h"
 #include "general_dds_candidate.h"
 #include "loader_config.h"
 #include <d3d11.h>
@@ -243,7 +244,71 @@ void TestTextureConversion() {
     std::cout<<"texture_conversion: PASS (BGRA->BC1 exact endpoints and mips, BC1->BGRA decode, verbatim header, limits)\n";
 }
 
-int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods,const std::filesystem::path& output) {
+void TestTextureResize() {
+    using B=std::byte;
+    // ds1a01_shoulder_diff.dds in media.upak: 1024x1024, BC1, 11 mips.
+    const auto bc1=*ValidateDds(Dds(1024,1024,false)).metadata;
+    const auto extra=EncodeTextureEngineExtra(bc1);
+    Check(extra&&*extra==TextureEngineExtra{B{15},B{11},B{1},B{0},B{4},B{0},B{4}},"BC1 extra differs from the package");
+    const auto format=[&](DdsFormat f) { auto m=bc1;m.format=f;return EncodeTextureEngineExtra(m); };
+    Check(format(DdsFormat::bgra8)->front()==B{6}&&format(DdsFormat::bc2)->front()==B{16}&&
+        format(DdsFormat::bc3)->front()==B{17},"engine formats differ from 0x751260");
+    auto dx10=bc1;dx10.has_dx10_header=true;dx10.header_size=148;
+    auto wide=bc1;wide.width=16385;auto mips=bc1;mips.mip_count=256;
+    Check(!format(DdsFormat::rgba8)&&!format(DdsFormat::bgr8)&&!format(DdsFormat::bc4)&&
+        !EncodeTextureEngineExtra(dx10)&&!EncodeTextureEngineExtra(wide)&&!EncodeTextureEngineExtra(mips),
+        "extra encoded for something the engine cannot take");
+    // The user's shoulder replacement: 512x1024 BC1 with its full chain.
+    const auto shoulder_bytes=Dds(512,1024,false);
+    const auto shoulder=*ValidateDds(shoulder_bytes).metadata;
+    const auto levels=TextureEngineLevels(shoulder);
+    std::uint64_t sum=0;for(const auto l:levels) sum+=l;
+    Check(levels.size()==11&&levels[0]==262144&&levels[1]==65536&&levels.back()==8&&sum==shoulder.payload_size,
+        "engine level sizes differ from the DDS layout");
+    // Mip trimming of the D3D9 handler (0x75A63C).
+    Check(TextureEngineMipSkip(11,1024,1024,0,2)==0&&TextureEngineMipSkip(11,1024,1024,0,1)==1&&
+        TextureEngineMipSkip(11,1024,1024,0,0)==2&&TextureEngineMipSkip(7,64,64,0,1)==0&&
+        TextureEngineMipSkip(8,128,128,0,1)==1&&TextureEngineMipSkip(12,2048,2048,9,2)==3&&
+        TextureEngineMipSkip(12,2048,2048,12,0)==2&&TextureEngineMipSkip(11,1024,4,9,2)==0&&
+        TextureEngineMipSkip(11,1024,1024,0,3)==0&&TextureEngineMipSkip(1,512,1024,0,0)==0,
+        "mip trimming differs from the handler");
+    // The plan: the package entry must repeat the original contract.
+    PackageIdentityEntry entry;entry.identity={0xABD000,0x19800,1251};entry.type_id=6;
+    entry.original_size=static_cast<std::uint32_t>(128+bc1.payload_size);
+    entry.metadata_size=64;entry.extra_offset=20;entry.extra.assign(extra->begin(),extra->end());
+    entry.metadata_sha256[0]=0x5A;
+    const auto storage=MakeByteStorage(shoulder_bytes).storage;
+    std::wstring error;
+    const auto plan=PlanTextureResize(entry,bc1,storage,shoulder,error);
+    Check(plan&&error.empty()&&plan->extra==TextureEngineExtra{B{15},B{11},B{1},B{0},B{2},B{0},B{4}}&&
+        plan->extra_offset==20&&plan->metadata_size==64&&plan->metadata_sha256==entry.metadata_sha256&&
+        plan->replacement_runs.size()==11&&plan->replacement_runs.front()==262144&&
+        plan->replacement_runs.back()==shoulder.payload_size&&plan->original_runs.back()==bc1.payload_size&&
+        plan->storage==storage,"shoulder resize plan rejected");
+    const auto rejected=[&](PackageIdentityEntry e,const DdsMetadata& replacement,std::shared_ptr<const ByteStorage> s) {
+        std::wstring why;return !PlanTextureResize(e,bc1,std::move(s),replacement,why)&&!why.empty();
+    };
+    auto other=entry;other.extra[1]^=B{1};
+    auto tiny=entry;tiny.metadata_size=6;
+    auto outside=entry;outside.extra_offset=58;
+    auto size=entry;++size.original_size;
+    auto rgba=shoulder;rgba.format=DdsFormat::rgba8;
+    auto longer=shoulder_bytes;longer.push_back(B{});
+    auto odd_side=shoulder;odd_side.width=510;
+    Check(rejected(other,shoulder,storage)&&rejected(tiny,shoulder,storage)&&rejected(outside,shoulder,storage)&&
+        rejected(size,shoulder,storage)&&rejected(entry,rgba,storage)&&rejected(entry,odd_side,storage)&&
+        rejected(entry,shoulder,MakeByteStorage(longer).storage)&&
+        rejected(entry,bc1,MakeByteStorage(Dds(1024,1024,false)).storage),
+        "invalid texture resize plan accepted");
+    const auto mode=ParseLoaderConfig("[loader]\ntextures=resize");
+    Check(mode.valid&&mode.config.native_textures&&mode.config.resize_textures&&
+        !ParseLoaderConfig("[loader]\ntextures=native").config.resize_textures&&
+        !ParseLoaderConfig("[loader]\ntextures=exact").config.resize_textures&&
+        !ParseLoaderConfig("[loader]\ntextures=resize\ntextures=native").valid,"resize texture mode failed");
+    std::cout<<"texture_resize: PASS (engine extra, level sizes, mip trimming, plan, 8 rejections, INI mode)\n";
+}
+
+int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods,const std::filesystem::path& output,bool resize) {
     using namespace ds2::modding;
     ModIndexOptions o;o.dds_only=true;o.include_png=true;o.max_asset_file_size=64ull*1024*1024;o.max_total_bytes=256ull*1024*1024;
     const auto index=BuildModIndex(mods,o);Check(index&&index.issues.empty(),"texture mod index rejected files");
@@ -252,13 +317,23 @@ int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem:
     PackageIdentityCatalogOptions identity;identity.allow_member_blocks=true; // as the loader does
     const auto catalog=BuildMediaPackageIdentityCatalog(game,paths,identity);Check(catalog&&catalog.issues.empty(),"texture identities missing");
     const auto contracts=BuildMediaPackageDdsContractCatalog(game,catalog.snapshot.get());Check(contracts&&contracts.issues.empty(),"texture original contracts unavailable");
-    GeneralDdsCandidateOptions options;options.allow_native_upload=true;
+    GeneralDdsCandidateOptions options;options.allow_native_upload=true;options.resize_textures=resize;
     const auto candidates=BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(),contracts.snapshot.get(),index.snapshot.get(),options);
     Check(candidates&&candidates.issues.empty()&&candidates.snapshot->Entries().size()==paths.size(),"native texture candidates rejected");
     for(const auto& c:candidates.snapshot->Entries()) std::wcout<<c.virtual_path.key<<L" "<<c.original_dds.width<<L"x"<<c.original_dds.height
         <<L" -> "<<c.source_dds.width<<L"x"<<c.source_dds.height<<L" route="
         <<(c.requires_native_upload ? L"native_upload" : c.converted ? L"converted_stream_copy" : L"stream_copy")
-        <<(c.conversion_error.empty() ? std::wstring{} : L" conversion_error="+c.conversion_error)<<L"\n";
+        <<(c.conversion_error.empty() ? std::wstring{} : L" conversion_error="+c.conversion_error)
+        <<(c.resize ? L" resize="+std::to_wstring(c.resize->dds.width)+L"x"+std::to_wstring(c.resize->dds.height)+
+            L"/"+std::wstring(DdsFormatName(c.resize->dds.format))+L"/mips="+std::to_wstring(c.resize->dds.mip_count)+
+            L" member="+std::to_wstring(c.identity.member_ordinal)+L" package_base="+std::to_wstring(c.identity.package_base)+
+            L" metadata_offset="+std::to_wstring(catalog.snapshot->Find(c.identity)->metadata_offset)+
+            L" metadata_bytes="+std::to_wstring(c.resize->metadata_size)+L" extra_offset="+std::to_wstring(c.resize->extra_offset)+
+            L" delivered="+std::to_wstring(c.resize->storage->Size())
+            : c.resize_error.empty() ? std::wstring{} : L" resize_error="+c.resize_error)<<L"\n";
+    // Every texture of another contract must get its plan.
+    if(resize) for(const auto& c:candidates.snapshot->Entries())
+        Check(c.resize||(!c.converted&&!c.requires_native_upload),"texture resize plan rejected");
     if(!output.empty()) for(const auto& c:candidates.snapshot->Entries())
         Write(output/std::filesystem::path(c.virtual_path.key).filename(),c.storage->Bytes());
     return 0;

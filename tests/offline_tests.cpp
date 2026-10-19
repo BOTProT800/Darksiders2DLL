@@ -101,7 +101,8 @@ struct SyntheticObpk final {
 SyntheticObpk MakeSyntheticNamedObpk(
     const bool member_blocks = false,
     const std::uint32_t type_id = 6,
-    const std::array<std::uint32_t, 2> sizes = {144, 144}) {
+    const std::array<std::uint32_t, 2> sizes = {144, 144},
+    const std::array<std::vector<std::byte>, 2>& extras = {}) {
     constexpr std::uint32_t table_offset = 0x40;
     constexpr std::array<std::string_view, 2> names{"first", "second"};
 
@@ -134,10 +135,12 @@ SyntheticObpk MakeSyntheticNamedObpk(
     }
     fixture.names_end = static_cast<std::uint32_t>(fixture.bytes.size());
 
-    // Each META record carries the authoritative uncompressed member size.
-    for (const auto size : sizes) {
-        AppendU32(fixture.bytes, size);
-        AppendU32(fixture.bytes, 0);  // no per-member extra metadata
+    // Each META record carries the authoritative uncompressed member size,
+    // then the member's extra metadata (none by default).
+    for (std::size_t index = 0; index < sizes.size(); ++index) {
+        AppendU32(fixture.bytes, sizes[index]);
+        AppendU32(fixture.bytes, static_cast<std::uint32_t>(extras[index].size()));
+        fixture.bytes.insert(fixture.bytes.end(), extras[index].begin(), extras[index].end());
     }
     fixture.payload_offset = static_cast<std::uint32_t>(
         fixture.bytes.size() + sizes.size() * sizeof(std::uint32_t));
@@ -314,8 +317,34 @@ std::vector<std::byte> MakeDx10Bc3Dds4x4() {
     return bytes;
 }
 
+// A DDS with `mips` levels in a FourCC block format, each byte distinct.
+std::vector<std::byte> MakeChainDds(const std::uint32_t four_cc, const std::uint32_t width,
+                                    const std::uint32_t height, const std::uint32_t mips,
+                                    const std::uint8_t seed) {
+    const std::size_t block = four_cc == 0x31545844 ? 8 : 16;
+    std::size_t payload = 0;
+    for (std::uint32_t level = 0, w = width, h = height; level < mips;
+         ++level, w = (std::max)(1u, w / 2), h = (std::max)(1u, h / 2)) {
+        payload += ((w + 3) / 4) * ((h + 3) / 4) * block;
+    }
+    std::vector<std::byte> bytes(128 + payload);
+    PutU32(bytes, 0, 0x20534444);   // "DDS "
+    PutU32(bytes, 4, 124);
+    PutU32(bytes, 8, 0x00021007);  // CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT
+    PutU32(bytes, 12, height);
+    PutU32(bytes, 16, width);
+    PutU32(bytes, 28, mips);
+    PutU32(bytes, 76, 32);
+    PutU32(bytes, 80, 4);          // DDPF_FOURCC
+    PutU32(bytes, 84, four_cc);
+    PutU32(bytes, 108, 0x00401008);  // COMPLEX | TEXTURE | MIPMAP
+    for (std::size_t at = 128; at < bytes.size(); ++at) bytes[at] = static_cast<std::byte>(seed + at * 7);
+    return bytes;
+}
+
 SyntheticObpk MakeSyntheticDdsStreamObpk(
-    const std::array<std::vector<std::byte>, 2>& members, const std::uint32_t type_id = 6) {
+    const std::array<std::vector<std::byte>, 2>& members, const std::uint32_t type_id = 6,
+    const std::array<std::vector<std::byte>, 2>& extras = {}) {
     Require(
         members[0].size() <= (std::numeric_limits<std::uint32_t>::max)() &&
             members[1].size() <= (std::numeric_limits<std::uint32_t>::max)(),
@@ -323,7 +352,7 @@ SyntheticObpk MakeSyntheticDdsStreamObpk(
     const std::array<std::uint32_t, 2> sizes{
         static_cast<std::uint32_t>(members[0].size()),
         static_cast<std::uint32_t>(members[1].size())};
-    SyntheticObpk fixture = MakeSyntheticNamedObpk(false, type_id, sizes);
+    SyntheticObpk fixture = MakeSyntheticNamedObpk(false, type_id, sizes, extras);
 
     std::vector<std::byte> unpacked;
     unpacked.reserve(members[0].size() + members[1].size());
@@ -1805,6 +1834,91 @@ void TestGeneralDdsCandidates(const std::filesystem::path& root) {
             "non-DDS package type reached the general candidate snapshot");
 }
 
+// textures=resize through the real catalogs: package extras as the packer
+// writes them, one larger replacement in another format and a smaller one.
+void TestTextureResizeCandidates(const std::filesystem::path& root) {
+    constexpr std::uint64_t segment_offset = 0x100;
+    constexpr std::uint32_t dxt1 = 0x31545844, dxt5 = 0x35545844;
+    const auto game = root / L"texture-resize-game";
+    const auto media = game / L"media";
+    std::filesystem::create_directories(media);
+    const std::array<std::vector<std::byte>, 2> originals{
+        MakeChainDds(dxt1, 8, 8, 4, 0x11), MakeChainDds(dxt1, 8, 8, 4, 0x22)};
+    const auto extra_of = [](const std::vector<std::byte>& dds) {
+        const auto extra = EncodeTextureEngineExtra(*ValidateDds(dds).metadata);
+        Require(extra.has_value(), "fixture original has no engine extra");
+        return std::vector<std::byte>(extra->begin(), extra->end());
+    };
+    const auto write_package = [&](const std::array<std::vector<std::byte>, 2>& extras) {
+        const auto obpk = MakeSyntheticDdsStreamObpk(originals, 6, extras);
+        std::vector<std::byte> package(static_cast<std::size_t>(segment_offset));
+        package.insert(package.end(), obpk.bytes.begin(), obpk.bytes.end());
+        WriteBytes(media / L"media.upak", package);
+        return package;
+    };
+    WriteBytes(media / L"manifest.bin", MakeSyntheticManifest(segment_offset));
+    const auto package = write_package({extra_of(originals[0]), extra_of(originals[1])});
+    const auto mods = root / L"texture-resize-mods" / L"resize_mod" / L"media" / L"ui" / L"fixture";
+    std::filesystem::create_directories(mods);
+    const auto larger = MakeChainDds(dxt5, 16, 8, 5, 0x33), smaller = MakeChainDds(dxt1, 4, 4, 3, 0x44);
+    WriteBytes(mods / L"first.dds", larger);
+    WriteBytes(mods / L"second.dds", smaller);
+    std::array<CanonicalVirtualPath, 2> requested{
+        *NormalizeVirtualPath(L"media/ui/fixture/first.dds").path,
+        *NormalizeVirtualPath(L"media/ui/fixture/second.dds").path};
+    const auto build = [&](const bool resize) {
+        const auto catalog = BuildMediaPackageIdentityCatalog(game, requested);
+        Require(catalog && catalog.issues.empty(), "texture resize package catalog failed");
+        const auto contracts = BuildMediaPackageDdsContractCatalog(game, catalog.snapshot.get());
+        Require(contracts && contracts.issues.empty(), "texture resize original contracts failed");
+        const auto index = BuildModIndex(root / L"texture-resize-mods");
+        Require(index && index.issues.empty(), "texture resize mods not indexed");
+        GeneralDdsCandidateOptions options;
+        options.allow_native_upload = true;
+        options.resize_textures = resize;
+        auto built = BuildGeneralDdsCandidateSnapshot(catalog.snapshot.get(), contracts.snapshot.get(),
+                                                      index.snapshot.get(), options);
+        Require(built && built.issues.empty() && built.snapshot->Entries().size() == 2,
+                "texture resize candidates rejected");
+        return std::make_pair(built.snapshot, catalog.snapshot);
+    };
+    const auto [snapshot, catalog] = build(true);
+    const auto entries = snapshot->Entries();
+    for (std::size_t member = 0; member < 2; ++member) {
+        const auto& c = entries[member];
+        const auto& replacement = member == 0 ? larger : smaller;
+        const auto* entry = catalog->Find(c.identity);
+        Require(c.resize && c.resize_error.empty() && entry && c.converted && !c.requires_native_upload &&
+                    std::ranges::equal(c.resize->storage->Bytes(), replacement) &&
+                    c.resize->metadata_size == entry->metadata_size && c.resize->extra_offset == entry->extra_offset &&
+                    c.resize->metadata_sha256 == entry->metadata_sha256 &&
+                    std::ranges::equal(c.resize->extra, extra_of(replacement)) &&
+                    c.storage->Size() == originals[member].size(),
+                "texture resize plan or fallback conversion missing");
+    }
+    // Every other mode keeps the 0.9.2 conversion only.
+    Require(!build(false).first->Entries()[0].resize, "resize planned without textures=resize");
+    // The package entry must repeat the original contract.
+    auto wrong = extra_of(originals[1]);
+    wrong[1] ^= std::byte{1};
+    write_package({extra_of(originals[0]), wrong});
+    const auto [mismatched, mismatched_catalog] = build(true);
+    Require(mismatched->Entries()[0].resize && !mismatched->Entries()[1].resize &&
+                !mismatched->Entries()[1].resize_error.empty() && mismatched->Entries()[1].converted,
+            "texture extra schema mismatch accepted");
+    static_cast<void>(mismatched_catalog);
+    write_package({extra_of(originals[0]), extra_of(originals[1])});
+#if defined(DS2_TEST_GENERAL_RESOLVER_RUNTIME)
+    const auto& first = *catalog->Find(entries[0].identity);
+    const auto block = std::span(package).subspan(
+        static_cast<std::size_t>(first.identity.package_base + first.metadata_offset), first.metadata_size);
+    const std::vector<std::byte> earlier(24, std::byte{0xEE}), next_member(64, std::byte{0xAB});
+    TestTextureResizeRuntime(*snapshot, originals, block, earlier, next_member);
+#endif
+    std::cout << "texture_resize_catalog: PASS (package extras, larger BC3 and smaller BC1, fallback conversion, "
+                 "mode gate, schema mismatch)\n";
+}
+
 void TestByteStorageContainment(const std::filesystem::path& root) {
     const auto confined_root = root / L"byte-storage-root";
     const auto sibling_root = root / L"byte-storage-root-sibling";
@@ -2174,6 +2288,8 @@ int wmain(const int argc, wchar_t** argv) {
             return CheckTextureCatalog(argv[2], argv[3], argv[4]);
         if (argc == 4 && std::wstring_view(argv[1]) == L"--texture-catalog")
             return CheckTextureCatalog(argv[2], argv[3]);
+        if ((argc == 4 || argc == 5) && std::wstring_view(argv[1]) == L"--texture-catalog-resize")
+            return CheckTextureCatalog(argv[2], argv[3], argc == 5 ? argv[4] : L"", true);
         if (argc >= 2 && std::wstring_view(argv[1]).starts_with(L"--anim-")) {
             if (argc == 4 && std::wstring_view(argv[1]) == L"--anim-check")
                 return CheckAnimationFiles(argv[2], argv[3]);
@@ -2207,6 +2323,7 @@ int wmain(const int argc, wchar_t** argv) {
         TestDdsValidation();
         TestNativeTextures(temporary.Path());
         TestTextureConversion();
+        TestTextureResize();
         TestReadableMemoryRange();
         TestSignatureScanner();
         TestResolverProbeFilter();
@@ -2219,6 +2336,7 @@ int wmain(const int argc, wchar_t** argv) {
         TestLoaderConfig(temporary.Path());
         TestModIndex(temporary.Path());
         TestGeneralDdsCandidates(temporary.Path());
+        TestTextureResizeCandidates(temporary.Path());
         TestModels(temporary.Path());
         TestAnimations(temporary.Path());
         TestByteStorageContainment(temporary.Path());

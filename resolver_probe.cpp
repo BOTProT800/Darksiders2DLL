@@ -621,7 +621,8 @@ struct GeneralDdsWriteResult final {
 #endif
 
 #if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
-// Resized models (research/MESH_RESIZE_RESEARCH.md). The package metadata
+// Resized members: models (research/MESH_RESIZE_RESEARCH.md) and textures
+// (research/TEXTURE_RESIZE_RESEARCH.md). The package metadata
 // block is read in one call returning to 0x9FEDC7. The data loop (0x9FEE5C)
 // reads buffers from 0x9FF0CD and skips null buffers through 0x100120, which
 // reads the non-seekable inflate wrapper in chunks returning to 0x100181,
@@ -629,19 +630,33 @@ struct GeneralDdsWriteResult final {
 constexpr std::uintptr_t kModelMetadataReadReturnRva = 0x009FEDC7;
 constexpr std::uintptr_t kStreamSkipReadReturnRva = 0x00100181;
 constexpr std::uintptr_t kStreamSkipCallReturnRva = 0x009FF045;
+// Mip trimming in the texture handlers: the effective [Resources]
+// MaxMipLevels word (written at 0x9E4570) and the pointer to the
+// [Renderer] TextureDetail integer.
+constexpr std::uintptr_t kMaxMipLevelsRva = 0x01EEF25C;
+constexpr std::uintptr_t kTextureDetailPointerRva = 0x01C3BD60;
+std::uintptr_t g_max_mip_levels_address{}, g_texture_detail_pointer_address{};
 std::unique_ptr<std::atomic<std::uint32_t>[]> g_model_resize_patched;
 std::atomic<std::uint64_t> g_model_resize_metadata_patches{}, g_model_resize_metadata_failures{},
     g_model_resize_members{}, g_model_resize_failures{};
+// Per general candidate: patches since the last metadata read that kept the
+// original entry.
+std::unique_ptr<std::atomic<std::uint32_t>[]> g_texture_resize_patched;
+std::atomic<std::uint64_t> g_texture_resize_metadata_patches{}, g_texture_resize_metadata_failures{},
+    g_texture_resize_metadata_declined{}, g_texture_resize_members{}, g_texture_resize_failures{};
 
-struct ModelSplice final {
-    const ModelCandidate* candidate{};
+// One resized member at a time per thread, a model or a texture.
+struct ResizeSplice final {
+    const ModelCandidate* model{};
+    const GeneralDdsCandidate* texture{};
     std::uintptr_t wrapper{};
     std::uint64_t member_index{};
+    std::span<const std::byte> source;
     std::size_t cursor{};
     std::uint32_t operations{}, first_request{};
     bool original_verified{};
 };
-constinit thread_local ModelSplice t_model_splice;
+constinit thread_local ResizeSplice t_resize_splice;
 
 // Copies into the engine's memory and reads the bytes back.
 [[nodiscard]] bool CopyAndVerify(void* const destination, const std::byte* const source,
@@ -664,18 +679,20 @@ constinit thread_local ModelSplice t_model_splice;
     return true;
 }
 
-void PublishModelResize(const ModelCandidate& candidate, const ModelResizePhase phase,
-                        const ModelSplice* const splice, const DWORD win32_error) noexcept {
+void PublishResize(const ResolverProbeEventKind kind, const PackageResourceIdentity& identity,
+                   const std::uint32_t original_size, const std::uint32_t source_size,
+                   const ModelResizePhase phase, const ResizeSplice* const splice,
+                   const DWORD win32_error) noexcept {
     auto* slot = ClaimEventSlot();
     if (!slot) return;
     ResolverProbeEvent event{};
-    event.kind = ResolverProbeEventKind::model_resize;
+    event.kind = kind;
     auto& resize = event.model_resize;
     resize.phase = phase;
-    resize.identity = candidate.identity;
+    resize.identity = identity;
     resize.replacement_source = true;
-    resize.original_size = candidate.resize->original_size;
-    resize.source_size = static_cast<std::uint32_t>(candidate.storage->Size());
+    resize.original_size = original_size;
+    resize.source_size = source_size;
     if (splice) {
         resize.original_verified = splice->original_verified;
         resize.delivered = static_cast<std::uint32_t>(splice->cursor);
@@ -685,29 +702,47 @@ void PublishModelResize(const ModelCandidate& candidate, const ModelResizePhase 
     resize.win32_error = win32_error;
     CaptureEventContext(event);
     slot->event = event;
-    PublishEventSlot(*slot, ResolverProbeEventKind::model_resize);
+    PublishEventSlot(*slot, kind);
 }
+void PublishModelResize(const ModelCandidate& candidate, const ModelResizePhase phase,
+                        const ResizeSplice* const splice, const DWORD win32_error) noexcept {
+    PublishResize(ResolverProbeEventKind::model_resize, candidate.identity, candidate.resize->original_size,
+                  static_cast<std::uint32_t>(candidate.storage->Size()), phase, splice, win32_error);
+}
+void PublishTextureResize(const GeneralDdsCandidate& candidate, const ModelResizePhase phase,
+                          const ResizeSplice* const splice, const DWORD win32_error) noexcept {
+    PublishResize(ResolverProbeEventKind::texture_resize, candidate.identity, candidate.original_size,
+                  static_cast<std::uint32_t>(candidate.resize->storage->Size()), phase, splice, win32_error);
+}
+
+// Hashed once, before any entry is rewritten: the models and textures of a
+// segment share the block.
+struct MetadataBlock final {
+    void* destination{};
+    std::int32_t size{};
+    bool hashed{}, valid{};
+    Sha256Digest digest{};
+    [[nodiscard]] bool Matches(const std::uint32_t expected_size, const Sha256Digest& expected) noexcept {
+        if (expected_size != static_cast<std::uint32_t>(size)) return false;
+        if (!hashed) {
+            hashed = true;
+            valid = TryHashProcessMemory(destination, static_cast<std::size_t>(size), digest);
+        }
+        return valid && digest == expected;
+    }
+};
 
 // Same length: member sizes and the final table stay original, because the
 // stream underneath still holds the original member.
-void PatchResizedModelMetadata(void* const destination, const std::int32_t requested,
-                               const std::int32_t returned) noexcept {
+void PatchResizedModelMetadata(MetadataBlock& block) noexcept {
     const auto* snapshot = g_model_candidates.load(std::memory_order_acquire);
-    if (!snapshot || !g_model_resize_patched || destination == nullptr || requested <= 0 ||
-        returned != requested || !g_model_write_enabled.load(std::memory_order_acquire) ||
-        !g_writer_enabled.load(std::memory_order_acquire) || g_writer_faulted.load(std::memory_order_acquire)) return;
-    bool hashed = false;
-    Sha256Digest block{};
+    if (!snapshot || !g_model_resize_patched || !g_model_write_enabled.load(std::memory_order_acquire)) return;
     for (std::size_t i = 0; i < snapshot->entries.size(); ++i) {
         const auto& candidate = snapshot->entries[i];
-        if (!candidate.resize || candidate.resize->metadata_size != static_cast<std::uint32_t>(requested)) continue;
-        if (!hashed) {
-            if (!TryHashProcessMemory(destination, static_cast<std::size_t>(requested), block)) return;
-            hashed = true;
-        }
-        if (block != candidate.resize->metadata_sha256) continue;
+        if (!candidate.resize || !block.Matches(candidate.resize->metadata_size, candidate.resize->metadata_sha256))
+            continue;
         const auto& extra = candidate.resize->extra;
-        if (CopyAndVerify(static_cast<std::byte*>(destination) + candidate.resize->extra_offset,
+        if (CopyAndVerify(static_cast<std::byte*>(block.destination) + candidate.resize->extra_offset,
                           extra.data(), extra.size())) {
             g_model_resize_patched[i].fetch_add(1, std::memory_order_acq_rel);
             g_model_resize_metadata_patches.fetch_add(1, std::memory_order_relaxed);
@@ -719,6 +754,58 @@ void PatchResizedModelMetadata(void* const destination, const std::int32_t reque
             PublishModelResize(candidate, ModelResizePhase::metadata_failed, nullptr, error);
         }
     }
+}
+
+// Whether the handler would now drop top mips of the replacement: its skip
+// would then run past the original's header. Unreadable settings count as a drop.
+[[nodiscard]] bool EngineDropsTextureMips(const DdsMetadata& dds) noexcept {
+    std::uint16_t limit = 0;
+    std::uintptr_t detail_address = 0;
+    std::int32_t detail = 0;
+    if (!CopyProcessMemory(reinterpret_cast<const void*>(g_max_mip_levels_address), &limit, sizeof(limit)) ||
+        !CopyProcessMemory(reinterpret_cast<const void*>(g_texture_detail_pointer_address), &detail_address,
+                           sizeof(detail_address)) ||
+        !CopyProcessMemory(reinterpret_cast<const void*>(detail_address), &detail, sizeof(detail))) return true;
+    return TextureEngineMipSkip(dds.mip_count, dds.width, dds.height, limit, detail) != 0;
+}
+
+void PatchResizedTextureMetadata(MetadataBlock& block) noexcept {
+    const auto* snapshot = g_general_candidates.load(std::memory_order_acquire);
+    if (!snapshot || !g_texture_resize_patched || g_writer_faulted.load(std::memory_order_acquire)) return;
+    const auto entries = snapshot->Entries();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto& candidate = entries[i];
+        if (!candidate.resize || !block.Matches(candidate.resize->metadata_size, candidate.resize->metadata_sha256))
+            continue;
+        if (EngineDropsTextureMips(candidate.resize->dds)) {
+            // The original entry stays: the member takes the copy route.
+            g_texture_resize_patched[i].store(0, std::memory_order_release);
+            g_texture_resize_metadata_declined.fetch_add(1, std::memory_order_relaxed);
+            PublishTextureResize(candidate, ModelResizePhase::metadata_declined, nullptr, ERROR_SUCCESS);
+            continue;
+        }
+        const auto& extra = candidate.resize->extra;
+        if (CopyAndVerify(static_cast<std::byte*>(block.destination) + candidate.resize->extra_offset,
+                          extra.data(), extra.size())) {
+            g_texture_resize_patched[i].fetch_add(1, std::memory_order_acq_rel);
+            g_texture_resize_metadata_patches.fetch_add(1, std::memory_order_relaxed);
+            PublishTextureResize(candidate, ModelResizePhase::metadata_patched, nullptr, ERROR_SUCCESS);
+        } else {
+            const DWORD error = GetLastError();
+            g_texture_resize_metadata_failures.fetch_add(1, std::memory_order_relaxed);
+            g_writer_faulted.store(true, std::memory_order_release);
+            PublishTextureResize(candidate, ModelResizePhase::metadata_failed, nullptr, error);
+        }
+    }
+}
+
+void PatchResizedMetadata(void* const destination, const std::int32_t requested,
+                          const std::int32_t returned) noexcept {
+    if (destination == nullptr || requested <= 0 || returned != requested ||
+        !g_writer_enabled.load(std::memory_order_acquire) || g_writer_faulted.load(std::memory_order_acquire)) return;
+    MetadataBlock block{destination, requested};
+    PatchResizedModelMetadata(block);
+    PatchResizedTextureMetadata(block);
 }
 
 struct SpliceOperation final {
@@ -765,67 +852,51 @@ struct SpliceOperation final {
     return PortableSha256Finalize(context, digest);
 }
 
-void FinishModelSplice(const ModelResizePhase phase, const DWORD win32_error = ERROR_SUCCESS) noexcept {
-    auto& splice = t_model_splice;
-    if (!splice.candidate) return;
-    if (phase == ModelResizePhase::complete) g_model_resize_members.fetch_add(1, std::memory_order_relaxed);
-    else g_model_resize_failures.fetch_add(1, std::memory_order_relaxed);
-    PublishModelResize(*splice.candidate, phase, &splice, win32_error);
+void FinishResizeSplice(const ModelResizePhase phase, const DWORD win32_error = ERROR_SUCCESS) noexcept {
+    auto& splice = t_resize_splice;
+    const bool complete = phase == ModelResizePhase::complete;
+    if (splice.texture) {
+        (complete ? g_texture_resize_members : g_texture_resize_failures).fetch_add(1, std::memory_order_relaxed);
+        PublishTextureResize(*splice.texture, phase, &splice, win32_error);
+    } else if (splice.model) {
+        (complete ? g_model_resize_members : g_model_resize_failures).fetch_add(1, std::memory_order_relaxed);
+        PublishModelResize(*splice.model, phase, &splice, win32_error);
+    } else {
+        return;
+    }
     splice = {};
 }
 
-[[nodiscard]] bool ServeModelSplice(const bool direct, void* const destination,
-                                    const std::int32_t requested, std::int32_t& result) noexcept {
-    auto& splice = t_model_splice;
-    const auto source = splice.candidate->storage->Bytes();
+[[nodiscard]] bool ServeResizeSplice(const bool direct, void* const destination,
+                                     const std::int32_t requested, std::int32_t& result) noexcept {
+    auto& splice = t_resize_splice;
+    const auto source = splice.source;
     const auto count = static_cast<std::size_t>(requested);
     if (count > source.size() - splice.cursor) {
-        // The engine's buffers do not follow the patched counts.
+        // The engine's buffers do not follow the patched entry.
         g_writer_faulted.store(true, std::memory_order_release);
-        FinishModelSplice(ModelResizePhase::failed, ERROR_INVALID_DATA);
+        FinishResizeSplice(ModelResizePhase::failed, ERROR_INVALID_DATA);
         return false;
     }
     // Skips read into the engine's scratch buffer: nothing to deliver there.
     if (direct && !CopyAndVerify(destination, source.data() + splice.cursor, count)) {
         const DWORD error = GetLastError();
         g_writer_faulted.store(true, std::memory_order_release);
-        FinishModelSplice(ModelResizePhase::failed, error);
+        FinishResizeSplice(ModelResizePhase::failed, error);
         return false;
     }
     splice.cursor += count;
     ++splice.operations;
     result = requested;
-    if (splice.cursor == source.size()) FinishModelSplice(ModelResizePhase::complete);
+    if (splice.cursor == source.size()) FinishResizeSplice(ModelResizePhase::complete);
     return true;
 }
 
-// Called before the original read. Returns true when the read was served from
-// a resized replacement; `result` then holds the engine's expected count.
-[[nodiscard]] bool TrySpliceModelRead(const StreamReadFn original, const std::uintptr_t caller_rva,
-                                      const std::uintptr_t slot, void* const stream, void* const destination,
-                                      const std::int32_t requested, std::int32_t& result) noexcept {
-    if (requested <= 0) return false;
-    auto& splice = t_model_splice;
-    const auto stream_address = reinterpret_cast<std::uintptr_t>(stream);
-    const auto op = ClassifySpliceOperation(caller_rva, slot, stream_address);
-    if (splice.candidate) {
-        if (op.valid && stream_address == splice.wrapper && op.member_index == splice.member_index)
-            return ServeModelSplice(op.direct, destination, requested, result);
-        // Moved on early: the stream is already aligned after the original.
-        if (op.valid || stream_address == splice.wrapper) FinishModelSplice(ModelResizePhase::incomplete);
-    }
-    // Skips before a member's first read belong to earlier members.
-    if (!op.valid || !op.direct || !g_model_resize_patched ||
-        !g_model_write_enabled.load(std::memory_order_acquire) ||
-        !g_writer_enabled.load(std::memory_order_acquire) || g_writer_faulted.load(std::memory_order_acquire))
-        return false;
-    const auto* scope = g_resource_identity_context.ActiveScope();
+[[nodiscard]] bool BeginModelSplice(const StreamReadFn original, const PackageResourceIdentity& identity,
+                                    const std::uint64_t member_index, void* const stream, void* const destination,
+                                    const std::int32_t requested, std::int32_t& result) noexcept {
     const auto* snapshot = g_model_candidates.load(std::memory_order_acquire);
-    if (!scope || !snapshot || !scope->object_fields_valid ||
-        scope->caller_rva != kExpectedResourceIdentityOuterReturnRva ||
-        op.member_index >= kResourceIdentityMaxMembersPerScope) return false;
-    const PackageResourceIdentity identity{scope->package_base,
-        static_cast<std::uint32_t>(scope->member_table_offset), static_cast<std::uint32_t>(op.member_index) + 1};
+    if (!snapshot || !g_model_resize_patched || !g_model_write_enabled.load(std::memory_order_acquire)) return false;
     const auto* candidate = snapshot->Find(identity);
     if (!candidate || !candidate->resize) return false;
     const auto& resize = *candidate->resize;
@@ -843,10 +914,75 @@ void FinishModelSplice(const ModelResizePhase phase, const DWORD win32_error = E
         PublishModelResize(*candidate, ModelResizePhase::failed, nullptr, ERROR_READ_FAULT);
         return false;
     }
-    splice = {candidate, stream_address, op.member_index, 0, 0, static_cast<std::uint32_t>(requested),
-              consumed == resize.original_sha256};
-    PublishModelResize(*candidate, ModelResizePhase::begin, &splice, ERROR_SUCCESS);
-    return ServeModelSplice(true, destination, requested, result);
+    t_resize_splice = {candidate, nullptr, reinterpret_cast<std::uintptr_t>(stream), member_index,
+                       candidate->storage->Bytes(), 0, 0, static_cast<std::uint32_t>(requested),
+                       consumed == resize.original_sha256};
+    PublishModelResize(*candidate, ModelResizePhase::begin, &t_resize_splice, ERROR_SUCCESS);
+    return ServeResizeSplice(true, destination, requested, result);
+}
+
+[[nodiscard]] bool BeginTextureSplice(const StreamReadFn original, const PackageResourceIdentity& identity,
+                                      const std::uint64_t member_index, void* const stream, void* const destination,
+                                      const std::int32_t requested, std::int32_t& result) noexcept {
+    const auto* snapshot = g_general_candidates.load(std::memory_order_acquire);
+    if (!snapshot || !g_texture_resize_patched) return false;
+    const auto* candidate = snapshot->Find(identity);
+    if (!candidate || !candidate->resize) return false;
+    const auto& resize = *candidate->resize;
+    const auto index = static_cast<std::size_t>(candidate - snapshot->Entries().data());
+    // The first read is a run of whole levels from the top; its size shows
+    // which entry the engine used. A size both layouts allow relies on every
+    // metadata patch succeeding.
+    const auto size = static_cast<std::uint32_t>(requested);
+    const auto is_run = [size](const std::vector<std::uint32_t>& runs) noexcept {
+        return std::find(runs.begin(), runs.end(), size) != runs.end();
+    };
+    if (g_texture_resize_patched[index].load(std::memory_order_acquire) == 0 || !is_run(resize.replacement_runs) ||
+        (is_run(resize.original_runs) && g_texture_resize_metadata_failures.load(std::memory_order_acquire) != 0))
+        return false;
+    // The engine has already skipped the header, 128 bytes in both versions:
+    // what is left of the original is its payload.
+    const auto header = static_cast<std::uint32_t>(candidate->original_dds.header_size);
+    Sha256Digest consumed{};
+    if (!ConsumeOriginalMember(original, stream, candidate->original_size - header, consumed)) {
+        g_writer_faulted.store(true, std::memory_order_release);
+        g_texture_resize_failures.fetch_add(1, std::memory_order_relaxed);
+        PublishTextureResize(*candidate, ModelResizePhase::failed, nullptr, ERROR_READ_FAULT);
+        return false;
+    }
+    t_resize_splice = {nullptr, candidate, reinterpret_cast<std::uintptr_t>(stream), member_index,
+                       resize.storage->Bytes(), resize.dds.header_size, 0, size,
+                       consumed == candidate->original_payload_sha256};
+    PublishTextureResize(*candidate, ModelResizePhase::begin, &t_resize_splice, ERROR_SUCCESS);
+    return ServeResizeSplice(true, destination, requested, result);
+}
+
+// Called before the original read. Returns true when the read was served from
+// a resized replacement; `result` then holds the engine's expected count.
+[[nodiscard]] bool TrySpliceResizedRead(const StreamReadFn original, const std::uintptr_t caller_rva,
+                                        const std::uintptr_t slot, void* const stream, void* const destination,
+                                        const std::int32_t requested, std::int32_t& result) noexcept {
+    if (requested <= 0) return false;
+    auto& splice = t_resize_splice;
+    const auto stream_address = reinterpret_cast<std::uintptr_t>(stream);
+    const auto op = ClassifySpliceOperation(caller_rva, slot, stream_address);
+    if (splice.model || splice.texture) {
+        if (op.valid && stream_address == splice.wrapper && op.member_index == splice.member_index)
+            return ServeResizeSplice(op.direct, destination, requested, result);
+        // Moved on early: the stream is already aligned after the original.
+        if (op.valid || stream_address == splice.wrapper) FinishResizeSplice(ModelResizePhase::incomplete);
+    }
+    // Skips before a member's first read belong to earlier members and, for a
+    // texture, to its 128-byte header, which both versions share.
+    if (!op.valid || !op.direct || !g_writer_enabled.load(std::memory_order_acquire) ||
+        g_writer_faulted.load(std::memory_order_acquire)) return false;
+    const auto* scope = g_resource_identity_context.ActiveScope();
+    if (!scope || !scope->object_fields_valid || scope->caller_rva != kExpectedResourceIdentityOuterReturnRva ||
+        op.member_index >= kResourceIdentityMaxMembersPerScope) return false;
+    const PackageResourceIdentity identity{scope->package_base,
+        static_cast<std::uint32_t>(scope->member_table_offset), static_cast<std::uint32_t>(op.member_index) + 1};
+    return BeginModelSplice(original, identity, op.member_index, stream, destination, requested, result) ||
+           BeginTextureSplice(original, identity, op.member_index, stream, destination, requested, result);
 }
 #endif
 
@@ -1203,7 +1339,7 @@ __declspec(noinline) std::int32_t HookStreamRead(
     {
         const DWORD entry_error = GetLastError();
         std::int32_t spliced = 0;
-        const bool served = TrySpliceModelRead(
+        const bool served = TrySpliceResizedRead(
             original, caller_rva, return_address_slot, stream, destination, byte_count, spliced);
         SetLastError(entry_error);
         if (served) return spliced;
@@ -1215,7 +1351,7 @@ __declspec(noinline) std::int32_t HookStreamRead(
     const DWORD result_error = GetLastError();
 #endif
 #if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
-    if (caller_rva == kModelMetadataReadReturnRva) PatchResizedModelMetadata(destination, byte_count, result);
+    if (caller_rva == kModelMetadataReadReturnRva) PatchResizedMetadata(destination, byte_count, result);
 #endif
 #if defined(DS2_RESOURCE_IDENTITY_ENABLED)
     ResourceIdentitySample identity_sample;
@@ -1333,6 +1469,11 @@ bool InitializeResolverProbe(
         return false;
     }
     g_general_candidates_owner = std::move(general_candidates);
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    if (g_general_candidates_owner)
+        g_texture_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(
+            g_general_candidates_owner->Entries().size());
+#endif
     g_general_candidates.store(g_general_candidates_owner.get(), std::memory_order_release);
     g_model_candidates_owner = std::move(model_candidates);
 #if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
@@ -1486,6 +1627,10 @@ bool InitializeResolverProbe(
     g_resource_identity_target =
         const_cast<std::byte*>(resource_identity_scan.address);
     g_game_image_base = base;
+#endif
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    g_max_mip_levels_address = base + kMaxMipLevelsRva;
+    g_texture_detail_pointer_address = base + kTextureDetailPointerRva;
 #endif
 
     const MH_STATUS initialize_status = MH_Initialize();
@@ -1674,6 +1819,11 @@ ResolverProbeStats GetResolverProbeStats() noexcept {
     stats.model_resize_members = g_model_resize_members.load(std::memory_order_relaxed);
     stats.model_resize_failures = g_model_resize_failures.load(std::memory_order_relaxed) +
         g_model_resize_metadata_failures.load(std::memory_order_relaxed);
+    stats.texture_resize_metadata_patches = g_texture_resize_metadata_patches.load(std::memory_order_relaxed);
+    stats.texture_resize_metadata_declined = g_texture_resize_metadata_declined.load(std::memory_order_relaxed);
+    stats.texture_resize_members = g_texture_resize_members.load(std::memory_order_relaxed);
+    stats.texture_resize_failures = g_texture_resize_failures.load(std::memory_order_relaxed) +
+        g_texture_resize_metadata_failures.load(std::memory_order_relaxed);
 #endif
     stats.animation_reads = g_animation_reads.load(std::memory_order_relaxed);
     stats.animation_matches = g_animation_matches.load(std::memory_order_relaxed);

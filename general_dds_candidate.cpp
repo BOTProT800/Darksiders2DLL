@@ -1,6 +1,7 @@
 #include "general_dds_candidate.h"
 #include "native_texture.h"
 #include "texture_convert.h"
+#include "texture_resize.h"
 
 #include <algorithm>
 #include <limits>
@@ -218,6 +219,11 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                     conversion_error = conversion.error;
                 }
             }
+            std::optional<TextureResize> resize;
+            std::wstring resize_error;
+            if (different_contract && options.allow_native_upload && options.resize_textures) {
+                resize = PlanTextureResize(package_entry, original_dds, asset->storage, dds, resize_error);
+            }
             const bool native_upload = !converted && (different_contract || asset->source_is_png);
             if (different_contract && !options.allow_native_upload) {
                 AddIssue(
@@ -281,6 +287,8 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 converted,
                 dds,
                 std::move(conversion_error),
+                std::move(resize),
+                std::move(resize_error),
             });
         }
 

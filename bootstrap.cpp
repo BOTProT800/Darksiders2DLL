@@ -166,34 +166,54 @@ namespace
                     : L"MODEL_READ_UNMATCHED"), detail);
             return;
         }
-        if (event.kind == ds2::modding::ResolverProbeEventKind::model_resize) {
+        if (event.kind == ds2::modding::ResolverProbeEventKind::model_resize ||
+            event.kind == ds2::modding::ResolverProbeEventKind::texture_resize) {
             using ds2::modding::ModelResizePhase;
+            const bool texture = event.kind == ds2::modding::ResolverProbeEventKind::texture_resize;
             const auto& resize = event.model_resize;
             const auto models = g_model_candidates.load(std::memory_order_acquire);
-            const auto* candidate = models ? models->Find(resize.identity) : nullptr;
+            const auto textures = g_general_dds_candidates.load(std::memory_order_acquire);
+            const auto* model = !texture && models ? models->Find(resize.identity) : nullptr;
+            const auto* dds = texture && textures ? textures->Find(resize.identity) : nullptr;
             detail.append(L" member_ordinal=" + std::to_wstring(resize.identity.member_ordinal));
             detail.append(L" package_base="); AppendHex(detail, resize.identity.package_base);
             detail.append(L" member_table_offset="); AppendHex(detail, resize.identity.member_table_offset);
             detail.append(L" original_bytes=" + std::to_wstring(resize.original_size));
             detail.append(L" replacement_bytes=" + std::to_wstring(resize.source_size));
-            if (resize.phase != ModelResizePhase::metadata_patched && resize.phase != ModelResizePhase::metadata_failed) {
+            const bool metadata = resize.phase == ModelResizePhase::metadata_patched ||
+                resize.phase == ModelResizePhase::metadata_failed ||
+                resize.phase == ModelResizePhase::metadata_declined;
+            if (!metadata) {
                 detail.append(L" first_request=" + std::to_wstring(resize.first_request));
                 detail.append(L" original_verified="); detail.append(BoolName(resize.original_verified));
                 detail.append(L" delivered=" + std::to_wstring(resize.delivered));
                 detail.append(L" operations=" + std::to_wstring(resize.operations));
             }
+            if (dds && dds->resize) {
+                detail.append(L" replacement=" + std::to_wstring(dds->resize->dds.width) + L"x" +
+                              std::to_wstring(dds->resize->dds.height) + L"/");
+                detail.append(ds2::modding::DdsFormatName(dds->resize->dds.format));
+                detail.append(L"/mips=" + std::to_wstring(dds->resize->dds.mip_count));
+            }
             detail.append(L" win32=" + std::to_wstring(resize.win32_error));
-            if (candidate) detail.append(L" path=" + candidate->virtual_path.key);
-            const wchar_t* name = L"MODEL_RESIZE_FAILED";
+            if (model) detail.append(L" path=" + model->virtual_path.key);
+            if (dds) detail.append(L" path=" + dds->virtual_path.key);
+            const wchar_t* name = texture ? L"TEXTURE_RESIZE_FAILED" : L"MODEL_RESIZE_FAILED";
             switch (resize.phase) {
-            case ModelResizePhase::metadata_patched: name = L"MODEL_RESIZE_METADATA_PATCHED"; break;
-            case ModelResizePhase::metadata_failed: name = L"MODEL_RESIZE_METADATA_FAILED"; break;
-            case ModelResizePhase::begin: name = L"MODEL_RESIZE_BEGIN"; break;
-            case ModelResizePhase::complete: name = L"MODEL_RESIZE_COMPLETE"; break;
-            case ModelResizePhase::incomplete: name = L"MODEL_RESIZE_INCOMPLETE"; break;
+            case ModelResizePhase::metadata_patched:
+                name = texture ? L"TEXTURE_RESIZE_METADATA_PATCHED" : L"MODEL_RESIZE_METADATA_PATCHED"; break;
+            case ModelResizePhase::metadata_failed:
+                name = texture ? L"TEXTURE_RESIZE_METADATA_FAILED" : L"MODEL_RESIZE_METADATA_FAILED"; break;
+            case ModelResizePhase::metadata_declined:
+                name = L"TEXTURE_RESIZE_METADATA_DECLINED"; break;
+            case ModelResizePhase::begin: name = texture ? L"TEXTURE_RESIZE_BEGIN" : L"MODEL_RESIZE_BEGIN"; break;
+            case ModelResizePhase::complete: name = texture ? L"TEXTURE_RESIZE_COMPLETE" : L"MODEL_RESIZE_COMPLETE"; break;
+            case ModelResizePhase::incomplete:
+                name = texture ? L"TEXTURE_RESIZE_INCOMPLETE" : L"MODEL_RESIZE_INCOMPLETE"; break;
             case ModelResizePhase::failed: break;
             }
-            if (resize.phase != ModelResizePhase::metadata_patched && resize.phase != ModelResizePhase::complete)
+            if (resize.phase != ModelResizePhase::metadata_patched && resize.phase != ModelResizePhase::complete &&
+                resize.phase != ModelResizePhase::metadata_declined)
                 AppendResolverStack(detail, event);
             LogEvent(name, detail);
             return;
@@ -444,6 +464,10 @@ namespace
             left.model_resize_metadata_patches == right.model_resize_metadata_patches &&
             left.model_resize_members == right.model_resize_members &&
             left.model_resize_failures == right.model_resize_failures &&
+            left.texture_resize_metadata_patches == right.texture_resize_metadata_patches &&
+            left.texture_resize_metadata_declined == right.texture_resize_metadata_declined &&
+            left.texture_resize_members == right.texture_resize_members &&
+            left.texture_resize_failures == right.texture_resize_failures &&
             left.animation_reads == right.animation_reads &&
             left.animation_matches == right.animation_matches &&
             left.read_file_calls == right.read_file_calls &&
@@ -544,6 +568,10 @@ namespace
         detail.append(L" model_resize_metadata_patches=" + std::to_wstring(stats.model_resize_metadata_patches));
         detail.append(L" model_resize_members=" + std::to_wstring(stats.model_resize_members));
         detail.append(L" model_resize_failures=" + std::to_wstring(stats.model_resize_failures));
+        detail.append(L" texture_resize_metadata_patches=" + std::to_wstring(stats.texture_resize_metadata_patches));
+        detail.append(L" texture_resize_metadata_declined=" + std::to_wstring(stats.texture_resize_metadata_declined));
+        detail.append(L" texture_resize_members=" + std::to_wstring(stats.texture_resize_members));
+        detail.append(L" texture_resize_failures=" + std::to_wstring(stats.texture_resize_failures));
         detail.append(L" animation_reads=" + std::to_wstring(stats.animation_reads));
         detail.append(L" animation_matches=" + std::to_wstring(stats.animation_matches));
         LogEvent(L"RESOLVER_PROBE_STATS", detail);
@@ -553,7 +581,8 @@ namespace
     void InitializeDdsCatalog(
         const std::filesystem::path& game_directory,
         const ds2::modding::ModIndexSnapshot& mod_index,
-        const bool native_textures) noexcept
+        const bool native_textures,
+        const bool resize_textures) noexcept
     {
         try
         {
@@ -707,6 +736,7 @@ namespace
 
             ds2::modding::GeneralDdsCandidateOptions candidate_options;
             candidate_options.allow_native_upload = native_textures;
+            candidate_options.resize_textures = resize_textures;
             auto candidates =
                 ds2::modding::BuildGeneralDdsCandidateSnapshot(
                     built.snapshot.get(), contracts.snapshot.get(),
@@ -776,6 +806,27 @@ namespace
                 if (!candidate.conversion_error.empty()) {
                     detail.append(L" conversion_error=\"");
                     detail.append(candidate.conversion_error);
+                    detail.push_back(L'"');
+                }
+                if (candidate.resize) {
+                    const auto& resize = *candidate.resize;
+                    detail.append(L" resize=");
+                    detail.append(std::to_wstring(resize.dds.width));
+                    detail.push_back(L'x');
+                    detail.append(std::to_wstring(resize.dds.height));
+                    detail.push_back(L'/');
+                    detail.append(ds2::modding::DdsFormatName(resize.dds.format));
+                    detail.append(L"/mips=");
+                    detail.append(std::to_wstring(resize.dds.mip_count));
+                    detail.append(L" resize_bytes=");
+                    detail.append(std::to_wstring(resize.storage->Size()));
+                    detail.append(L" metadata_bytes=");
+                    detail.append(std::to_wstring(resize.metadata_size));
+                    detail.append(L" extra_offset=");
+                    detail.append(std::to_wstring(resize.extra_offset));
+                } else if (!candidate.resize_error.empty()) {
+                    detail.append(L" resize_error=\"");
+                    detail.append(candidate.resize_error);
                     detail.push_back(L'"');
                 }
                 detail.append(L" full_size=");
@@ -969,7 +1020,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.10.0-resize-trial mode=asset_loader");
+            LogEvent(L"SESSION_START", L"version=0.11.0-texture-resize-trial mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";
@@ -1005,7 +1056,9 @@ namespace
                                         std::memory_order_release);
                 return;
             }
-            LogEvent(L"LOADER_CONFIG", config.config.write_enabled ? L"mode=override" : L"mode=observe");
+            LogEvent(L"LOADER_CONFIG", std::wstring(config.config.write_enabled ? L"mode=override" : L"mode=observe") +
+                (config.config.resize_textures ? L" textures=resize"
+                    : config.config.native_textures ? L" textures=native" : L" textures=exact"));
             ds2::modding::ModIndexOptions index_options;
             index_options.dds_only = true;
             index_options.include_native_models = config.config.models != ds2::modding::ModelMode::off;
@@ -1046,7 +1099,8 @@ namespace
             }
 
             auto snapshot = std::move(index_result.snapshot);
-            InitializeDdsCatalog(game_directory, *snapshot, config.config.native_textures);
+            InitializeDdsCatalog(game_directory, *snapshot, config.config.native_textures,
+                                 config.config.resize_textures);
             if (config.config.models != ds2::modding::ModelMode::off) {
                 const auto contract = config.config.models == ds2::modding::ModelMode::override_positions
                     ? ds2::modding::ModelEditContract::positions_only

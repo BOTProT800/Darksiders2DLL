@@ -90,6 +90,7 @@
     <ClCompile Include="native_texture.cpp" />
     <ClCompile Include="png_texture.cpp" />
     <ClCompile Include="texture_convert.cpp" />
+    <ClCompile Include="texture_resize.cpp" />
     <ClCompile Include="model_candidate.cpp" />
     <ClCompile Include="model_validation.cpp" />
     <ClCompile Include="package_identity_catalog.cpp" />

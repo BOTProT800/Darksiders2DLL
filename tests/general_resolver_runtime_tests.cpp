@@ -89,7 +89,9 @@ void ResetRuntime() {
 #if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
     g_model_resize_metadata_patches = 0; g_model_resize_metadata_failures = 0;
     g_model_resize_members = 0; g_model_resize_failures = 0;
-    t_model_splice = {};
+    g_texture_resize_metadata_patches = 0; g_texture_resize_metadata_failures = 0;
+    g_texture_resize_metadata_declined = 0; g_texture_resize_members = 0; g_texture_resize_failures = 0;
+    t_resize_splice = {};
 #endif
     ResolverProbeEvent event;
     while (TryPopResolverProbeEvent(event)) {}
@@ -640,6 +642,254 @@ void TestModelResizeRuntime(const ds2::modding::ModelCandidate& candidate,
     g_original_stream_read = nullptr; g_game_image_base = 0;
     ResetRuntime();
     std::cout << "model_resize_runtime: PASS (metadata patch, original-count passthrough, direct/skip splice, alignment, incomplete, fault latch)\n";
+}
+
+namespace {
+std::vector<ds2::modding::ResolverProbeEvent> DrainTextureResizeEvents() {
+    std::vector<ds2::modding::ResolverProbeEvent> events;
+    ds2::modding::ResolverProbeEvent event;
+    while (TryPopResolverProbeEvent(event))
+        if (event.kind == ds2::modding::ResolverProbeEventKind::texture_resize) events.push_back(event);
+    return events;
+}
+}
+
+void TestTextureResizeRuntime(const ds2::modding::GeneralDdsCandidateSnapshot& snapshot,
+                              const std::span<const std::vector<std::byte>> originals,
+                              const std::span<const std::byte> metadata_block,
+                              const std::span<const std::byte> earlier,
+                              const std::span<const std::byte> next_member) {
+    using namespace ds2::modding;
+    const auto entries = snapshot.Entries();
+    Check(entries.size() == 2 && originals.size() == 2 && entries[0].resize && entries[1].resize &&
+              entries[0].identity.member_ordinal == 1 && entries[1].identity.member_ordinal == 2,
+          "texture resize runtime fixture needs two resized members");
+    g_general_candidates = &snapshot;
+    g_original_stream_read = SequenceStreamRead;
+    (void)InvokeEngineFrame(RecordCaller, nullptr, 0, 0, 0);
+    const auto direct_return = recorded_caller;
+    (void)InvokeEngineFrame(RecordCaller, nullptr, 0, 0, 1);
+    const auto skip_return = recorded_caller;
+    ResourceIdentityScopeInput input;
+    input.stream_valid = true; input.stream = 1; input.object_fields_valid = true;
+    input.package_base = entries[0].identity.package_base;
+    input.member_table_offset = static_cast<std::int32_t>(entries[0].identity.member_table_offset);
+    input.caller_rva = kExpectedResourceIdentityOuterReturnRva;
+    // The handler's mip settings, read through the same pointers as in the game.
+    std::uint16_t max_mip_levels = 0;
+    std::int32_t texture_detail = 2;
+    const auto* texture_detail_address = &texture_detail;
+    const auto engine = [&](void* destination, const std::size_t size, const std::uint64_t member, const bool skip) {
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+        g_game_image_base = skip ? skip_return - kStreamSkipReadReturnRva
+                                 : direct_return - kExpectedResourceReadReturnRva;
+        const std::uintptr_t skip_call = skip ? g_game_image_base + kStreamSkipCallReturnRva : 0;
+#else
+        g_game_image_base = direct_return - kExpectedResourceReadReturnRva;
+        const std::uintptr_t skip_call = 0;
+        static_cast<void>(skip);
+#endif
+        return InvokeEngineFrame(HookStreamRead, destination, static_cast<std::int32_t>(size), member, skip_call);
+    };
+    // The decompressed stream: bytes still pending from earlier members, both
+    // originals, then the next member.
+    const auto load_stream = [&] {
+        fake_stream.assign(earlier.begin(), earlier.end());
+        for (const auto& original : originals) fake_stream.insert(fake_stream.end(), original.begin(), original.end());
+        fake_stream.insert(fake_stream.end(), next_member.begin(), next_member.end());
+        fake_cursor = 0;
+    };
+    std::vector<std::byte> scratch(8192);
+    // A member's null buffers ({null,128} header) are skipped together with
+    // whatever earlier members left pending, right before its first read.
+    const auto skip_header = [&](const std::uint64_t member, const std::size_t pending) {
+        Check(engine(scratch.data(), pending + 128, member, true) == static_cast<std::int32_t>(pending + 128),
+              "texture header skip count differs");
+    };
+    const auto payload = [](const GeneralDdsCandidate& c) { return c.resize->storage->Bytes().subspan(128); };
+    // An original-layout read still takes the copy route: the conversion to
+    // the original contract when there is one.
+    const auto fallback = [&](const std::size_t member) {
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+        if (entries[member].converted) return entries[member].storage->Bytes().subspan(128);
+#endif
+        return std::span<const std::byte>(originals[member]).subspan(128);
+    };
+    ResetRuntime();
+#if defined(DS2_GENERAL_DDS_WRITE_ENABLED)
+    g_max_mip_levels_address = reinterpret_cast<std::uintptr_t>(&max_mip_levels);
+    g_texture_detail_pointer_address = reinterpret_cast<std::uintptr_t>(&texture_detail_address);
+    const auto read_metadata = [&](std::vector<std::byte>& block) {
+        fake_stream.assign(metadata_block.begin(), metadata_block.end()); fake_cursor = 0;
+        block.assign(metadata_block.size(), std::byte{});
+        g_game_image_base = direct_return - kModelMetadataReadReturnRva;
+        return InvokeEngineFrame(HookStreamRead, block.data(), static_cast<std::int32_t>(block.size()), 0, 0);
+    };
+    g_texture_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(2);
+    {
+        // Without a metadata patch the engine reads the original payload.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 7);
+        skip_header(0, earlier.size());
+        std::vector<std::byte> original_payload(originals[0].size() - 128);
+        Check(engine(original_payload.data(), original_payload.size(), 0, false) ==
+                  static_cast<std::int32_t>(original_payload.size()) &&
+                  std::ranges::equal(original_payload, fallback(0)) &&
+                  DrainTextureResizeEvents().empty(), "unpatched texture member was spliced");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    // The metadata read: both members' extras rewritten from one hash of the block.
+    std::vector<std::byte> block;
+    Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+              g_texture_resize_patched[0] == 1 && g_texture_resize_patched[1] == 1 &&
+              g_texture_resize_metadata_patches == 2, "texture resize metadata not patched");
+    auto expected_block = std::vector<std::byte>(metadata_block.begin(), metadata_block.end());
+    for (const auto& c : entries)
+        std::copy(c.resize->extra.begin(), c.resize->extra.end(), expected_block.begin() + c.resize->extra_offset);
+    auto events = DrainTextureResizeEvents();
+    Check(block == expected_block && events.size() == 2 &&
+              events[0].model_resize.phase == ModelResizePhase::metadata_patched &&
+              events[1].model_resize.phase == ModelResizePhase::metadata_patched, "texture metadata block differs");
+    {
+        // A payload of the original layout: the engine used another copy of
+        // the entry, so the member is read unchanged.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 8);
+        skip_header(0, earlier.size());
+        std::vector<std::byte> original_payload(originals[0].size() - 128);
+        Check(engine(original_payload.data(), original_payload.size(), 0, false) ==
+                  static_cast<std::int32_t>(original_payload.size()) &&
+                  std::ranges::equal(original_payload, fallback(0)) &&
+                  DrainTextureResizeEvents().empty(), "original-layout payload was spliced");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // The data loop over the patched entries: each payload in one run
+        // (contiguous texture memory), the next member still aligned.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 9);
+        std::size_t pending = earlier.size();
+        for (std::uint64_t member = 0; member < 2; ++member) {
+            skip_header(member, pending);
+            pending = 0;
+            const auto expected = payload(entries[member]);
+            std::vector<std::byte> destination(expected.size());
+            Check(engine(destination.data(), destination.size(), member, false) ==
+                      static_cast<std::int32_t>(destination.size()) &&
+                      std::equal(destination.begin(), destination.end(), expected.begin()),
+                  "resized texture payload differs from the replacement");
+        }
+        Check(fake_cursor == earlier.size() + originals[0].size() + originals[1].size(),
+              "resized textures did not consume exactly the originals");
+        std::vector<std::byte> after(next_member.size());
+        Check(engine(after.data(), after.size(), 2, false) == static_cast<std::int32_t>(after.size()) &&
+                  std::equal(after.begin(), after.end(), next_member.begin()), "next member lost its alignment");
+        events = DrainTextureResizeEvents();
+        Check(events.size() == 4 && g_texture_resize_members == 2 && g_texture_resize_failures == 0,
+              "texture resize events differ");
+        for (std::size_t member = 0; member < 2; ++member) {
+            const auto& begin = events[member * 2].model_resize;
+            const auto& complete = events[member * 2 + 1].model_resize;
+            Check(begin.phase == ModelResizePhase::begin && begin.original_verified &&
+                      begin.first_request == payload(entries[member]).size() &&
+                      complete.phase == ModelResizePhase::complete && complete.operations == 1 &&
+                      complete.delivered == entries[member].resize->storage->Size() &&
+                      complete.original_size == originals[member].size() &&
+                      complete.identity == entries[member].identity, "texture begin/complete events differ");
+        }
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // Separate level buffers: the first read is the top level only.
+        load_stream();
+        const auto scope = g_resource_identity_context.Begin(input, 10);
+        skip_header(0, earlier.size());
+        const auto expected = payload(entries[0]);
+        const auto top = entries[0].resize->replacement_runs.front();
+        Check(top < expected.size(), "texture fixture needs more than one level");
+        std::vector<std::byte> first(top), rest(expected.size() - top);
+        Check(engine(first.data(), first.size(), 0, false) == static_cast<std::int32_t>(first.size()) &&
+                  engine(rest.data(), rest.size(), 0, false) == static_cast<std::int32_t>(rest.size()) &&
+                  std::equal(first.begin(), first.end(), expected.begin()) &&
+                  std::equal(rest.begin(), rest.end(), expected.begin() + top), "per-level texture reads differ");
+        events = DrainTextureResizeEvents();
+        Check(events.size() == 2 && events[1].model_resize.phase == ModelResizePhase::complete &&
+                  events[1].model_resize.operations == 2, "per-level texture reads not completed");
+        // Moving on after the top level: the splice ends, the stream stays aligned.
+        skip_header(1, 0);
+        std::vector<std::byte> partial(entries[1].resize->replacement_runs.front());
+        Check(partial.size() < payload(entries[1]).size() &&
+                  engine(partial.data(), partial.size(), 1, false) == static_cast<std::int32_t>(partial.size()) &&
+                  std::equal(partial.begin(), partial.end(), payload(entries[1]).begin()),
+              "second texture not served");
+        std::vector<std::byte> after(next_member.size());
+        Check(engine(after.data(), after.size(), 2, false) == static_cast<std::int32_t>(after.size()) &&
+                  std::equal(after.begin(), after.end(), next_member.begin()),
+              "next member after an incomplete texture lost its alignment");
+        events = DrainTextureResizeEvents();
+        Check(events.size() == 2 && events[1].model_resize.phase == ModelResizePhase::incomplete &&
+                  g_texture_resize_failures == 1, "incomplete texture splice not reported");
+        Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    }
+    {
+        // Mip trimming the handler would apply to a replacement keeps that
+        // member's original entry (and clears its earlier patch).
+        ResetRuntime();
+        const auto& first = entries[0].resize->dds;
+        max_mip_levels = static_cast<std::uint16_t>(first.mip_count - 1);
+        Check(TextureEngineMipSkip(first.mip_count, first.width, first.height, max_mip_levels, 2) == 1,
+              "fixture replacement is not trimmed by MaxMipLevels");
+        const bool second_trimmed = TextureEngineMipSkip(entries[1].resize->dds.mip_count,
+            entries[1].resize->dds.width, entries[1].resize->dds.height, max_mip_levels, 2) != 0;
+        Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+                  g_texture_resize_patched[0] == 0 && g_texture_resize_metadata_declined >= 1 &&
+                  std::equal(block.begin() + entries[0].resize->extra_offset,
+                             block.begin() + entries[0].resize->extra_offset + kTextureEngineExtraSize,
+                             metadata_block.begin() + entries[0].resize->extra_offset),
+              "trimmed texture entry was patched");
+        Check(second_trimmed ? g_texture_resize_patched[1] == 0 : g_texture_resize_patched[1] == 2,
+              "untrimmed texture entry not patched alongside");
+        events = DrainTextureResizeEvents();
+        Check(!events.empty() && events[0].model_resize.phase == ModelResizePhase::metadata_declined,
+              "texture decline not reported");
+        max_mip_levels = 0;
+        // Unreadable settings count as trimming.
+        g_texture_detail_pointer_address = 0;
+        Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+                  std::equal(block.begin(), block.end(), metadata_block.begin()) && g_texture_resize_patched[0] == 0 &&
+                  g_texture_resize_patched[1] == 0, "unreadable mip settings did not keep the original entries");
+        g_texture_detail_pointer_address = reinterpret_cast<std::uintptr_t>(&texture_detail_address);
+        static_cast<void>(DrainTextureResizeEvents());
+    }
+    {
+        // A latched writer fault disables both the patch and the splice.
+        ResetRuntime(); g_writer_faulted = true;
+        g_texture_resize_patched = std::make_unique<std::atomic<std::uint32_t>[]>(2);
+        Check(read_metadata(block) == static_cast<std::int32_t>(metadata_block.size()) &&
+                  std::equal(block.begin(), block.end(), metadata_block.begin()) && g_texture_resize_patched[0] == 0,
+              "faulted writer patched texture metadata");
+    }
+    g_texture_resize_patched.reset();
+    g_max_mip_levels_address = 0; g_texture_detail_pointer_address = 0;
+#else
+    // Observation builds never patch metadata nor splice members.
+    load_stream();
+    const auto scope = g_resource_identity_context.Begin(input, 7);
+    skip_header(0, earlier.size());
+    std::vector<std::byte> original_payload(originals[0].size() - 128);
+    Check(engine(original_payload.data(), original_payload.size(), 0, false) ==
+              static_cast<std::int32_t>(original_payload.size()) &&
+              std::ranges::equal(original_payload, fallback(0)) &&
+              DrainTextureResizeEvents().empty(), "observation build spliced a texture");
+    Check(g_resource_identity_context.End(scope.token) == ResourceIdentityEndStatus::matched, "scope lost");
+    static_cast<void>(metadata_block); static_cast<void>(payload); static_cast<void>(max_mip_levels);
+    static_cast<void>(texture_detail_address); static_cast<void>(skip_return);
+#endif
+    g_general_candidates = nullptr;
+    g_original_stream_read = nullptr; g_game_image_base = 0;
+    ResetRuntime();
+    std::cout << "texture_resize_runtime: PASS (shared block hash, original-layout passthrough, header skip, "
+                 "one-run and per-level splice, alignment, incomplete, mip-trim decline, fault latch)\n";
 }
 
 void TestAnimationRuntime(const ds2::modding::AnimationCandidate& candidate,

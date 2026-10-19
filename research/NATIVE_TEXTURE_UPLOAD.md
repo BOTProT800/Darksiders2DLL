@@ -1,5 +1,11 @@
 # Carga nativa de texturas 2D — 0.6.0
 
+> **Nota del 18 de octubre de 2026:** `0xD4E62C` pertenece al renderer D3D11,
+> que el juego solo usa con `-dx11`. Con el renderer por defecto (D3D9) la textura
+> se crea en la fase 0 con el `extra` del paquete y esta función no se llama: por
+> eso esta ruta nunca se activó en el juego. Véase
+> [TEXTURE_RESIZE_RESEARCH.md](TEXTURE_RESIZE_RESEARCH.md).
+
 Build de referencia: `Darksiders2.exe`, SHA-256
 `5580738EF70BC5BBCC72D7DC4A9C319956CD14DBFEF6F9DBEC54C1B5D97799FB`.
 Análisis de DUMPBIN de la instalación local, sin modificar el ejecutable.

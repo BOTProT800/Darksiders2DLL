@@ -47,6 +47,7 @@ enum class ResolverProbeState {
 enum class ResolverProbeEventKind {
     model_read,
     model_resize,
+    texture_resize,  // carried in ResolverProbeEvent::model_resize
     animation_read,
     stream_first_entry,
     package_segment_read,
@@ -81,7 +82,8 @@ struct GeneralDdsDryRunProbeEvent final {
 static_assert(std::is_trivially_copyable_v<GeneralDdsDryRunProbeEvent>);
 #endif
 
-// A resized model: metadata entry rewritten, member delivered at its own size.
+// A resized model or texture: metadata entry rewritten, member delivered at
+// its own size.
 enum class ModelResizePhase : std::uint8_t {
     metadata_patched,
     metadata_failed,
@@ -89,6 +91,9 @@ enum class ModelResizePhase : std::uint8_t {
     complete,
     incomplete,
     failed,
+    // Textures only: the engine would drop top mips of the replacement
+    // (MaxMipLevels/TextureDetail), so the original entry is kept.
+    metadata_declined,
 };
 struct ModelResizeProbeEvent final {
     ModelResizePhase phase{ModelResizePhase::failed};
@@ -156,6 +161,8 @@ struct ResolverProbeStatus final {
 struct ResolverProbeStats final {
     std::uint64_t model_reads{}, model_matches{}, model_write_attempts{}, model_writes{}, model_failures{};
     std::uint64_t model_resize_metadata_patches{}, model_resize_members{}, model_resize_failures{};
+    std::uint64_t texture_resize_metadata_patches{}, texture_resize_metadata_declined{},
+        texture_resize_members{}, texture_resize_failures{};
     std::uint64_t animation_reads{}, animation_matches{};
     std::uint64_t read_file_calls{};
     std::uint64_t package_segment_reads{};
