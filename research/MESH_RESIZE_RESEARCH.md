@@ -162,6 +162,10 @@ positivo, la DLL leería mal los pares y, salvo coincidencia, rechazaría la mal
 al compararla con el `extra` del paquete o al comprobar tamaño y cabecera: no la
 entregaría mal.
 
+**Resuelto el 19 de octubre:** los 7608 `.2` extraídos guardan el recuento
+negativo (|n| = mallas) y ninguno positivo; `PairCount` (`model_validation.cpp`)
+rechaza ahora un recuento positivo con un error explícito.
+
 ## Diseño propuesto
 
 **Catálogo** (al arrancar), cuando la malla nueva no cabe en el hueco original:

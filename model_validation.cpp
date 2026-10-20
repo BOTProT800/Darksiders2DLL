@@ -30,6 +30,18 @@ struct Reader {
         if (value < 0 || value > 1'000'000) throw std::runtime_error("count");
         return static_cast<std::uint32_t>(value);
     }
+    // Pair table count as the extra generator reads it (0x758A60 D3D9, 0x1086174
+    // DX11): n < 0 means |n| entries {i32 pair, f32}, n > 0 means n bare i32.
+    // All 7608 extracted .2 store n < 0, so the 4-byte layout is refused.
+    std::uint32_t PairCount() {
+        const std::int64_t value = Read<std::int32_t>();
+        if (value > 0)
+            throw std::runtime_error("positive pair count " + std::to_string(value) +
+                ": the engine reads bare i32 pair entries, a layout no packaged .2 uses; "
+                "store the count negative with {i32, f32} entries");
+        if (value < -1'000'000) throw std::runtime_error("count");
+        return static_cast<std::uint32_t>(-value);
+    }
     // Offsets grow with the file (over 1 MB in large models), unlike counts.
     std::uint32_t Offset() {
         const std::int64_t value = Read<std::int32_t>();
@@ -107,7 +119,7 @@ ParsedModel Parse(const std::span<const std::byte> bytes) {
         parsed.meshes[i].vertex_entry = r.cursor;
         vertices[i] = r.Count(true);
     }
-    const auto extra = r.Count(true);
+    const auto extra = r.PairCount();
     parsed.pairs_offset = r.cursor;
     parsed.pairs_size = static_cast<std::size_t>(extra) * 8;
     r.Skip(parsed.pairs_size);
@@ -548,27 +560,35 @@ ModelFitResult FitModelReplacement(const std::span<const std::byte> original,
     }
     return result;
 }
+namespace {
+ModelEngineCounts ReadEngineCounts(const std::span<const std::byte> model) {
+    if (model.size() < 32 || model.size() > 64ull * 1024 * 1024) throw std::runtime_error("size");
+    Reader r{model};
+    ModelEngineCounts counts;
+    counts.header_size = r.Read<std::uint32_t>();
+    const auto meshes = r.Count();
+    if (meshes == 0 || meshes > 256 || counts.header_size > model.size() || r.Count() != meshes)
+        throw std::runtime_error("header");
+    counts.meshes.resize(meshes);
+    for (auto& mesh : counts.meshes) mesh.indices = r.Count();
+    if (r.Count(true) != meshes) throw std::runtime_error("vertex table");
+    for (auto& mesh : counts.meshes) {
+        mesh.vertices = r.Read<std::int32_t>();
+        if (mesh.vertices < -1'000'000 || mesh.vertices > 1'000'000 || mesh.vertices == 0)
+            throw std::runtime_error("vertex count");
+    }
+    counts.pairs = r.PairCount();
+    if (counts.pairs > meshes) throw std::runtime_error("more pairs than meshes");
+    for (std::uint32_t i = 0; i < counts.pairs; ++i) {
+        counts.meshes[i].pair = r.Read<std::int32_t>();
+        r.Skip(4); // float factor, not part of the package metadata
+    }
+    return counts;
+}
+}
 bool ReadModelEngineCounts(const std::span<const std::byte> model, ModelEngineCounts& counts) noexcept {
-    counts = {};
     try {
-        if (model.size() < 32 || model.size() > 64ull * 1024 * 1024) return false;
-        Reader r{model};
-        counts.header_size = r.Read<std::uint32_t>();
-        const auto meshes = r.Count();
-        if (meshes == 0 || meshes > 256 || counts.header_size > model.size() || r.Count() != meshes) return false;
-        counts.meshes.resize(meshes);
-        for (auto& mesh : counts.meshes) mesh.indices = r.Count();
-        if (r.Count(true) != meshes) return false;
-        for (auto& mesh : counts.meshes) {
-            mesh.vertices = r.Read<std::int32_t>();
-            if (mesh.vertices < -1'000'000 || mesh.vertices > 1'000'000 || mesh.vertices == 0) return false;
-        }
-        counts.pairs = r.Count(true);
-        if (counts.pairs > meshes) return false;
-        for (std::uint32_t i = 0; i < counts.pairs; ++i) {
-            counts.meshes[i].pair = r.Read<std::int32_t>();
-            r.Skip(4); // float factor, not part of the package metadata
-        }
+        counts = ReadEngineCounts(model);
         return true;
     } catch (...) {
         counts = {};
@@ -639,6 +659,7 @@ namespace {
 // engine buffers end, and the records end exactly at the header size.
 void CheckResizedHeader(const std::span<const std::byte> bytes, const ModelEngineCounts& counts) {
     Reader r{bytes};
+    // Pair entries are {i32, f32}: PairCount refuses the positive 4-byte layout.
     r.Skip(8 + 4 + counts.meshes.size() * 4ull + 4 + counts.meshes.size() * 4ull + 4 + counts.pairs * 8ull);
     std::uint64_t block = counts.header_size;
     for (std::size_t i = 0; i < counts.meshes.size(); ++i) {
@@ -701,14 +722,21 @@ ModelResizePlan PlanModelResize(const std::span<const std::byte> original, const
                                 const std::span<const std::byte> original_extra) {
     ModelResizePlan plan;
     try {
-        ModelEngineCounts before, after;
-        if (!ReadModelEngineCounts(original, before) || ModelEngineSize(before) != original.size())
+        // The reason is kept: a positive pair count must say so.
+        const auto read = [](const std::span<const std::byte> model, const char* role) {
+            try {
+                return ReadEngineCounts(model);
+            } catch (const std::exception& error) {
+                throw std::runtime_error(std::string(role) + " count tables are invalid: " + error.what());
+            }
+        };
+        const auto before = read(original, "original");
+        if (ModelEngineSize(before) != original.size())
             throw std::runtime_error("original layout is outside the engine model");
         const auto expected = EncodeModelEngineExtra(before);
         if (!std::equal(expected.begin(), expected.end(), original_extra.begin(), original_extra.end()))
             throw std::runtime_error("package metadata does not repeat the original header counts");
-        if (!ReadModelEngineCounts(replacement, after))
-            throw std::runtime_error("replacement count tables are invalid");
+        const auto after = read(replacement, "replacement");
         if (after.meshes.size() != before.meshes.size() || after.pairs != before.pairs)
             throw std::runtime_error("mesh or pair count changed: the package metadata entry would change length");
         if (ModelEngineSize(after) != replacement.size() || replacement.size() > 0x7FFFFFFFull)

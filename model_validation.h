@@ -77,7 +77,8 @@ struct ModelFitResult final {
 // The counts the mesh cache reads from the package metadata (D3D9 0x75908C)
 // and repeats in the .2 header: header size, then per mesh the index count,
 // the signed vertex count (negative = static) and, for the first `pairs` meshes,
-// the integer of the header's pair table.
+// the integer of the header's pair table. `pairs` is |n| of the header's
+// negative count; a positive count (bare i32 entries) is refused.
 struct ModelEngineMesh final {
     std::uint32_t indices{};
     std::int32_t vertices{}, pair{};
