@@ -74,7 +74,7 @@ struct ModelFitResult final {
 [[nodiscard]] ModelFitResult FitModelReplacement(
     std::span<const std::byte> original, std::span<const std::byte> replacement);
 
-// The counts gfc::MeshResourceArray reads from the package metadata (0x10867AC)
+// The counts the mesh cache reads from the package metadata (D3D9 0x75908C)
 // and repeats in the .2 header: header size, then per mesh the index count,
 // the signed vertex count (negative = static) and, for the first `pairs` meshes,
 // the integer of the header's pair table.

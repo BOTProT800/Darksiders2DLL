@@ -131,7 +131,7 @@ void TestModelDeletion(const std::filesystem::path& temporary_root) {
 #endif
 }
 void TestModelResize(const std::filesystem::path& temporary_root) {
-    // The engine model (MeshResourceArray 0x10867AC) on the synthetic layout.
+    // The engine model (mesh cache 0x75908C / 0x10867AC) on the synthetic layout.
     const auto original = MakeSkinnedModel({0, 1, 2, 3, 4}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}});
     ModelEngineCounts counts;
     Require(ReadModelEngineCounts(original, counts) && counts.header_size == 101 && counts.pairs == 0 &&

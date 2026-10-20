@@ -576,7 +576,7 @@ bool ReadModelEngineCounts(const std::span<const std::byte> model, ModelEngineCo
     }
 }
 std::vector<ModelEngineBuffer> ModelEngineBuffers(const ModelEngineCounts& counts) {
-    // MeshResourceArray 0x10867AC: sizes are masked to 31 bits by the engine.
+    // Mesh cache 0x75908C (D3D9) / 0x10867AC (DX11): sizes masked to 31 bits.
     std::vector<ModelEngineBuffer> buffers{{counts.header_size, false}};
     const auto add = [&](const std::uint64_t size, const bool skipped = false) {
         if (size > 0x7FFFFFFFull) throw std::runtime_error("engine buffer exceeds 31 bits");
