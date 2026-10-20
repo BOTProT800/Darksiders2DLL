@@ -42,6 +42,23 @@ se usa la conversión al contrato original (0.9.2), igual que con
 `offline_tests.exe --texture-catalog-resize CARPETA_JUEGO CARPETA_MODS` comprueba
 los planes contra el `media.upak` instalado sin modificarlo.
 
+### Instalación de la prueba de la hombrera
+
+`scripts/install_texture_resize_trial.ps1` instala la DLL validada de
+`build/validation-texture-resize-trial`, añade `textures=resize` al INI (conserva
+el resto de `[loader]`) y copia `DS1A01_Shoulder_Diff.dds`, `_Norm.dds` y
+`_Spec.dds` de `-TextureDirectory` a `mods/first_test_mod/media/items/armor`.
+Requiere el juego cerrado, comprueba el ejecutable y la DLL instalada
+(`-ExpectedCurrentProxySha256`) y respalda todo con hashes fuera del juego. La
+acción predeterminada `Check` solo muestra los cambios; `Install` escribe y
+`Restore` deshace la instalación si nada cambió después:
+
+```powershell
+.\scripts\install_texture_resize_trial.ps1 -Action Restore `
+  -GameDirectory 'C:\Program Files (x86)\Steam\steamapps\common\Darksiders II Deathinitive Edition' `
+  -BackupDirectory 'CARPETA_DEL_RESPALDO'
+```
+
 ## Subida nativa (0.6.0-texture-trial)
 
 La subida nativa de esta sección usa el renderer D3D11, que el juego solo activa
