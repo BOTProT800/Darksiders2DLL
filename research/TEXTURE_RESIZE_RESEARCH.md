@@ -4,8 +4,8 @@ Investigación estática del 18 de octubre de 2026 sobre `Darksiders2.exe`
 (SHA-256 `5580738EF70BC5BBCC72D7DC4A9C319956CD14DBFEF6F9DBEC54C1B5D97799FB`).
 Se usaron DUMPBIN, `.pdata`, RTTI, el `media.upak` instalado y los logs de
 sesiones anteriores, siempre en modo lectura. Implementado en
-0.11.0-texture-resize-trial (sección «Implementación»). **Falta la prueba en el
-juego.**
+0.11.0-texture-resize-trial (sección «Implementación») y **confirmado en el
+juego el 19 de octubre** (sección «Juego»).
 
 ## Respuesta corta
 
@@ -227,14 +227,39 @@ smoke de los exports y protecciones PE). DLL Release
 `645EA9B48BDD432A90BE6AAD2831FD2FED1AFB0B3898C084E913132E541E52A6`. La
 instalación no cambió durante las pruebas.
 
-## Riesgos que solo resuelve una prueba en el juego
+## Juego: 19 de octubre de 2026
 
-- **Momento de la lectura en segmentos por bloques:** el parche de metadatos de
-  mallas se confirmó en un segmento de un solo stream; `media/items` es por
-  bloques. Si sus metadatos se leyeran por otra ruta, no habría
-  `TEXTURE_RESIZE_METADATA_PATCHED` y se usaría la conversión 0.9.2.
-- **Memoria contigua:** si D3D9 no diera niveles contiguos, la primera lectura
-  sería solo el nivel superior. Está previsto y probado, pero no observado.
+`scripts/install_texture_resize_trial.ps1` instaló la DLL Release verificada
+`645EA9B4…52A6`, añadió `textures=resize` al INI (conservando
+`models=override_unchecked` y `animations=observe`) y copió a
+`mods/first_test_mod/media/items/armor` tres DDS sintéticos con el contrato de
+las texturas del usuario: `diff` y `norm` en 512×1024 BC1 con 11 mips (349.672
+bytes; tablero rojo y blanco y normal plana) y `spec` en 512×1024 BC3 con 1 nivel
+(524.416 bytes). El respaldo está en `build/texture-resize-trial/installation-backup`.
+
+La sesión `Darksiders2DLL-20261020-034822-9404-000.log` (hora UTC; copia en
+`build/texture-resize-trial/texture-resize.log`) registró:
+
+- `LOADER_CONFIG mode=override textures=resize` y los tres candidatos con
+  `resize=512x1024/…`, junto al de la máscara de `death_head.2`.
+- `TEXTURE_RESIZE_METADATA_PATCHED` para los tres miembros, cuatro veces cada
+  uno: el segmento por bloques `0xABD000` relee su bloque de metadatos y cada
+  lectura se parcheó. En el mismo proceso, `MODEL_RESIZE_METADATA_PATCHED` y
+  `MODEL_RESIZE_COMPLETE delivered=193097 operations=25` para la máscara.
+- `TEXTURE_RESIZE_BEGIN ... original_verified=true` con
+  `first_request=349544` (BC1) y `524288` (BC3): el payload entero en una sola
+  lectura, con los niveles contiguos en la memoria de D3D9.
+- `TEXTURE_RESIZE_COMPLETE delivered=349672` (×2) y `delivered=524416`, con
+  `operations=1` en cada uno.
+- Estadísticas: 12 parches de metadatos, 3 texturas entregadas, 0 rechazos,
+  0 fallos y 0 eventos perdidos. `general_write_attempts=0`: la conversión 0.9.2
+  no llegó a usarse.
+
+El usuario confirmó que funciona. Quedan resueltos el momento de la lectura en
+segmentos por bloques y la contigüidad de la memoria de D3D9.
+
+## Riesgos que siguen abiertos
+
 - **Creación de la textura:** un `CreateTexture` fallido bloquearía el juego.
   Los límites del plan evitan los casos conocidos; texturas muy grandes podrían
   agotar memoria.

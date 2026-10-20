@@ -6,8 +6,9 @@ textura DDS o PNG de otro tamaño, formato o número de mips (por ejemplo
 convertirla al contrato original: la DLL reescribe en memoria su `extra` de
 7 bytes en los metadatos del paquete y sirve el payload nuevo después de
 consumir el original. Si el parche no llega al motor, se usa la conversión de la
-0.9.2. Pendiente de probar en el juego
-([investigación e implementación](research/TEXTURE_RESIZE_RESEARCH.md),
+0.9.2. Confirmado en el juego con las texturas de la hombrera
+`ds1a01_shoulder` a 512×1024 (BC1 y BC3 de 1 nivel) sobre originales de 1024²
+([investigación, implementación y evidencia](research/TEXTURE_RESIZE_RESEARCH.md),
 [uso](distribution/TEXTURAS_HD.md)). La investigación muestra además que el
 juego usa el renderer D3D9 salvo con `-dx11`, por lo que la subida nativa D3D11
 de la 0.6.0 no podía activarse.
