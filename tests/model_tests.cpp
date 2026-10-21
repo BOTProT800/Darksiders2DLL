@@ -464,8 +464,8 @@ void TestModels(const std::filesystem::path& temporary_root) {
 int CheckModelFiles(const std::filesystem::path& original, const std::filesystem::path& modified,
                     const std::filesystem::path& expanded, const bool unchecked) {
     using namespace ds2::modding;
-    const auto before = LoadByteStorage(original, 64ull * 1024 * 1024);
-    auto after = LoadByteStorage(modified, 64ull * 1024 * 1024);
+    const auto before = LoadByteStorage(original, kMaxModelBytes);
+    auto after = LoadByteStorage(modified, kMaxModelBytes);
     if (!before || !after) {
         std::wcerr << L"MODEL_CHECK_FAILED: cannot read files: " << (!before ? before.detail : after.detail) << L'\n';
         return 1;

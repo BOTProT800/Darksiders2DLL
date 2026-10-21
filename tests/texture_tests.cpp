@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #pragma comment(lib, "d3d11.lib")
@@ -194,8 +195,10 @@ void TestNativeTextures(const std::filesystem::path& root) {
 int CheckTextureFiles(const std::filesystem::path& source) {
     using namespace ds2::modding;
     const auto check=[](const std::filesystem::path& file) {
-        auto loaded=LoadByteStorage(file,64ull*1024*1024);Check(bool(loaded),"texture input unreadable");
-        if(file.extension()==L".png") loaded=DecodePngTexture(loaded.storage->Bytes(),64ull*1024*1024);
+        // No byte budget, as the loader (RESTRICCIONES.md).
+        constexpr auto unlimited=(std::numeric_limits<std::uint64_t>::max)();
+        auto loaded=LoadByteStorage(file,unlimited);Check(bool(loaded),"texture input unreadable");
+        if(file.extension()==L".png") loaded=DecodePngTexture(loaded.storage->Bytes(),unlimited);
         Check(bool(loaded),"texture decode failed");const auto d=ValidateDds(loaded.storage->Bytes());Check(bool(d),"texture DDS validation failed");
         std::wcout<<file.filename().wstring()<<L": "<<d.metadata->width<<L"x"<<d.metadata->height
             <<L" mips="<<d.metadata->mip_count<<L" format="<<DdsFormatName(d.metadata->format)

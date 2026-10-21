@@ -98,6 +98,34 @@ predecía y qué buscar en el log si un mod falla.
 | 64 MiB por archivo y 256 MiB en total (índice de mods, originales de texturas y de mallas). Un PNG de 4096² con mips ya los superaba, y pasarse del total desactivaba **todo** el cargador | Sin presupuesto. Si un archivo no cabe en memoria, solo ese archivo se descarta (`MOD_INDEX_ISSUE`) |
 | 16.384 archivos de mods, 100.000 entradas y 16.384 miembros por lectura del paquete | Sin tope |
 
+## Prueba pendiente en el juego: 0.12.0
+
+Dos sesiones, para que un cierre del juego tenga una sola explicación posible.
+`scripts/install_tested_limits_trial.ps1` instala la DLL validada, quita
+`textures=` y `models=` del INI (así se prueban los valores por defecto) y
+copia los mapas de la hombrera de `-TextureDirectory`. Respalda todo con hashes
+fuera del juego y `Restore` lo deshace. Las texturas se generan con
+`build/tested-limits-trial/make_textures.py`.
+
+| Sesión | Mapas de `ds1a01_shoulder` | Qué prueba | Predicción |
+|---|---|---|---|
+| A | Diff RGBA8 4096² con 13 mips (85 MiB); Spec BC3 512×1024 con cabecera DX10; Norm de la 0.11.0 | Valores por defecto, RGBA8 a su tamaño, DX10, sin presupuesto de memoria; `death_head.2` sigue redimensionándose | Ninguna |
+| B | Diff BC1 510×1022 (lados no múltiplos de 4), tras restaurar A | La regla de D3D9 sobre lados BC | `CreateTexture` falla y el juego se cierra |
+
+En el log (`%LOCALAPPDATA%\Darksiders2DLL\logs`):
+
+- A: `SESSION_START version=0.12.0-tested-limits-trial`, `LOADER_CONFIG mode=override
+  textures=resize` sin la línea en el INI, `TEXTURE_RESIZE_COMPLETE delivered=89478612`
+  (Diff), `delivered=524416` (Spec ya con cabecera clásica) y `delivered=349672`
+  (Norm), y `MODEL_RESIZE_COMPLETE delivered=193097` para la máscara.
+- B: `resize_warning="untested: D3D9 documents BC sides as multiples of 4"` en
+  el candidato y, si no hay cierre, `TEXTURE_RESIZE_COMPLETE delivered=349664`.
+
+En pantalla, la hombrera de la sesión A es un tablero **azul y amarillo**:
+rojo y cian querría decir que el cambio de RGBA8 a BGRA8 está mal. La de la
+sesión B es **verde y magenta**. El resultado de cada sesión se anota aquí como
+C-xx o F-xx.
+
 ## Lo que se mantiene, y por qué
 
 ### Seguridad y plataforma
