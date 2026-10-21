@@ -302,10 +302,11 @@ void TestTextureResize() {
         "invalid texture resize plan accepted");
     const auto mode=ParseLoaderConfig("[loader]\ntextures=resize");
     Check(mode.valid&&mode.config.native_textures&&mode.config.resize_textures&&
+        ParseLoaderConfig("[loader]").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=native").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=exact").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=resize\ntextures=native").valid,"resize texture mode failed");
-    std::cout<<"texture_resize: PASS (engine extra, level sizes, mip trimming, plan, 8 rejections, INI mode)\n";
+    std::cout<<"texture_resize: PASS (engine extra, level sizes, mip trimming, plan, 8 rejections, INI mode, default resize)\n";
 }
 
 int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods,const std::filesystem::path& output,bool resize) {

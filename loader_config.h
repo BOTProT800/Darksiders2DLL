@@ -13,8 +13,10 @@ struct LoaderConfig final {
     bool write_enabled{true};
     bool native_textures{true};
     // textures=resize: native, plus delivery at the texture's own size.
-    bool resize_textures{false};
-    ModelMode models{ModelMode::off};
+    // Defaults are the combination confirmed in game with 0.11.0, so the
+    // release works without an INI: textures=resize, models=override_unchecked.
+    bool resize_textures{true};
+    ModelMode models{ModelMode::override_unchecked};
     AnimationMode animations{AnimationMode::off};
 };
 struct LoaderConfigResult final {

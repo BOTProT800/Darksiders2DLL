@@ -1,9 +1,10 @@
 # Texturas HD y PNG
 
-## Tamaño propio: `textures=resize` (0.11.0-texture-resize-trial)
+## Tamaño propio: `textures=resize` (por defecto desde la 0.11.0)
 
-Con `textures=resize` en `[loader]`, un DDS o PNG de otro tamaño, formato o
-número de mips se entrega al motor tal cual: una textura de 1024 × 1024 puede
+Con `textures=resize`, el valor por defecto aunque no haya INI, un DDS o PNG de
+otro tamaño, formato o número de mips se entrega al motor tal cual: una textura
+de 1024 × 1024 puede
 sustituirse por una de 512 × 1024 o de 2048 × 2048, sin reescalarla al original.
 La DLL reescribe en memoria el `extra` de la textura en los metadatos del
 paquete (el motor dimensiona la textura con él) y sirve los datos nuevos después
@@ -85,8 +86,9 @@ No dejes simultáneamente DDS y PNG con el mismo destino dentro de un mod:
 se rechazan todos esos alias para evitar una elección dependiente del orden.
 Entre mods sigue ganando el primer nombre de carpeta en orden léxico.
 
-En `[loader]`, `textures=native` es el valor predeterminado y permite PNG y
-contratos de tamaño distinto. `textures=exact` recupera el comportamiento anterior:
+En `[loader]`, `textures=native` (el valor predeterminado hasta la 0.10.0;
+desde la 0.11.0 lo es `textures=resize`) permite PNG y contratos de tamaño
+distinto. `textures=exact` recupera el comportamiento anterior:
 solo DDS con el contrato original. `mode=observe` registra las coincidencias sin
 sustituir texturas. `models` conserva su configuración independiente.
 

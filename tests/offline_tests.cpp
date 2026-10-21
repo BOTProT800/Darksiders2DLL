@@ -2247,8 +2247,15 @@ void TestDeployedMod(const std::filesystem::path& mods_root) {
 
 void TestLoaderConfig(const std::filesystem::path& root) {
     const auto absent = LoadLoaderConfig(root);
-    Require(absent.valid && absent.config.enabled && absent.config.write_enabled,
+    Require(absent.valid && absent.config.enabled && absent.config.write_enabled &&
+                absent.config.native_textures && absent.config.resize_textures &&
+                absent.config.models == ModelMode::override_unchecked &&
+                absent.config.animations == AnimationMode::off,
             "missing config did not use defaults");
+    const auto section_only = ParseLoaderConfig("[loader]");
+    Require(section_only.valid && section_only.config.resize_textures &&
+                section_only.config.models == ModelMode::override_unchecked,
+            "empty [loader] did not use defaults");
     const auto disabled = ParseLoaderConfig("[loader]\nenabled=false\nmode=observe\n");
     Require(disabled.valid && !disabled.config.enabled && !disabled.config.write_enabled,
             "disabled/observe config failed");
@@ -2281,17 +2288,17 @@ void TestLoaderConfig(const std::filesystem::path& root) {
 }  // namespace
 
 // The shipped template must load with the DLL's own parser and keep the
-// documented defaults: loader on, overriding, native textures, no models or
-// animations.
+// documented defaults: loader on, overriding, textures at their own size,
+// unchecked models, no animations.
 int CheckConfigTemplate(const std::filesystem::path& directory) {
     const auto loaded = LoadLoaderConfig(directory);
     Require(std::filesystem::is_regular_file(directory / L"Darksiders2DLL.ini") && loaded.valid,
             "config template missing or rejected by the loader");
     const auto& c = loaded.config;
-    Require(c.enabled && c.write_enabled && c.native_textures && !c.resize_textures &&
-                c.models == ModelMode::off && c.animations == AnimationMode::off,
+    Require(c.enabled && c.write_enabled && c.native_textures && c.resize_textures &&
+                c.models == ModelMode::override_unchecked && c.animations == AnimationMode::off,
             "config template does not keep the documented defaults");
-    std::cout << "config_template: PASS (enabled, override, textures=native, models=off, animations=off)\n";
+    std::cout << "config_template: PASS (enabled, override, textures=resize, models=override_unchecked, animations=off)\n";
     return 0;
 }
 
