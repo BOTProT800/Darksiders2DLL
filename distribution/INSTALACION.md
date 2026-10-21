@@ -108,6 +108,9 @@ mode=override
 - `mode=observe`: valida y registra candidatos sin modificar buffers del juego.
 - `mode=override`: sustituye únicamente lecturas cuya identidad, contrato y hash
   original coinciden, y verifica el hash después de escribir.
+- `textures`, `models` y `animations` vienen comentadas en la plantilla con sus
+  valores posibles; quita el `;` para usarlas. `textures=resize` entrega las
+  texturas a su propio tamaño ([TEXTURAS_HD.md](TEXTURAS_HD.md)).
 
 Si falta el INI se usan `enabled=true` y `mode=override`. Una clave desconocida,
 duplicada, valor incorrecto, archivo vacío, no legible, redirigido o mayor de 16 KiB

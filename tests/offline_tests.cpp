@@ -2280,8 +2280,25 @@ void TestLoaderConfig(const std::filesystem::path& root) {
 
 }  // namespace
 
+// The shipped template must load with the DLL's own parser and keep the
+// documented defaults: loader on, overriding, native textures, no models or
+// animations.
+int CheckConfigTemplate(const std::filesystem::path& directory) {
+    const auto loaded = LoadLoaderConfig(directory);
+    Require(std::filesystem::is_regular_file(directory / L"Darksiders2DLL.ini") && loaded.valid,
+            "config template missing or rejected by the loader");
+    const auto& c = loaded.config;
+    Require(c.enabled && c.write_enabled && c.native_textures && !c.resize_textures &&
+                c.models == ModelMode::off && c.animations == AnimationMode::off,
+            "config template does not keep the documented defaults");
+    std::cout << "config_template: PASS (enabled, override, textures=native, models=off, animations=off)\n";
+    return 0;
+}
+
 int wmain(const int argc, wchar_t** argv) {
     try {
+        if (argc == 3 && std::wstring_view(argv[1]) == L"--config-check")
+            return CheckConfigTemplate(argv[2]);
         if (argc == 3 && std::wstring_view(argv[1]) == L"--texture-check")
             return CheckTextureFiles(argv[2]);
         if (argc == 5 && std::wstring_view(argv[1]) == L"--texture-catalog")

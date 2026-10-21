@@ -62,6 +62,7 @@ if ($AssetSource) {
 foreach ($test in @(@('tests-debug','Debug','true'), @('tests-release','Release','true'), @('tests-observe','Release','false'))) {
     $dir = Build $test[0] 'Darksiders2DLL.Tests.vcxproj' $test[1] @("/p:TestGeneralResolverWrite=$($test[2])")
     Run $test[0] (Join-Path $dir 'offline_tests.exe') $arguments
+    Run "$($test[0])-config-template" (Join-Path $dir 'offline_tests.exe') @('--config-check', (Join-Path $root 'distribution'))
     if ($ModelModsDirectory) {
         if (!$GameDirectory) { throw 'ModelModsDirectory requiere GameDirectory.' }
         Run "$($test[0])-models" (Join-Path $dir 'offline_tests.exe') @('--model-catalog', $GameDirectory, $ModelModsDirectory)
