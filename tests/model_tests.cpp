@@ -458,7 +458,7 @@ void TestModels(const std::filesystem::path& temporary_root) {
             shape_observe.config.models == ModelMode::override_unchecked, "shape global observation lost");
     for (const auto* value : {"models=override", "models=true", "models=off\nmodels=observe"})
         Require(!ParseLoaderConfig(std::string("[loader]\n") + value).valid, "invalid model config accepted");
-    std::cout << "model_validation: PASS (legacy positions, bounded shape, orthonormal basis, immutable bounds/UV/skin, deletion expansion, unchecked fit, malformed inputs, opt-in)\n";
+    std::cout << "model_validation: PASS (legacy positions, bounded shape, orthonormal basis, immutable bounds/UV/skin, deletion expansion, unchecked fit, malformed inputs, default unchecked)\n";
 }
 
 int CheckModelFiles(const std::filesystem::path& original, const std::filesystem::path& modified,

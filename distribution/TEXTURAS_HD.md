@@ -1,6 +1,6 @@
 # Texturas HD y PNG
 
-## Tamaño propio: `textures=resize` (0.11.0-texture-resize-trial)
+## Tamaño propio: `textures=resize` (por defecto desde la 0.11.0)
 
 **Desde 0.12.0-tested-limits-trial es el valor por defecto**, también sin la
 línea `textures=` en el INI. Además (véase [RESTRICCIONES.md](../RESTRICCIONES.md)):
@@ -97,8 +97,9 @@ No dejes simultáneamente DDS y PNG con el mismo destino dentro de un mod:
 se rechazan todos esos alias para evitar una elección dependiente del orden.
 Entre mods sigue ganando el primer nombre de carpeta en orden léxico.
 
-En `[loader]`, `textures=native` es el valor predeterminado y permite PNG y
-contratos de tamaño distinto. `textures=exact` recupera el comportamiento anterior:
+En `[loader]`, `textures=native` (el valor predeterminado hasta la 0.10.0;
+desde la 0.11.0 lo es `textures=resize`) permite PNG y contratos de tamaño
+distinto. `textures=exact` recupera el comportamiento anterior:
 solo DDS con el contrato original. `mode=observe` registra las coincidencias sin
 sustituir texturas. `models` conserva su configuración independiente.
 

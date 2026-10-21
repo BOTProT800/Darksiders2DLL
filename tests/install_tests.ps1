@@ -3,6 +3,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$GameExecutable,
     [Parameter(Mandatory=$true)][string]$DllPath,
+    # Extracted Release ZIP from package_release.ps1; without it one is assembled here.
     [string]$PackageDirectory = ''
 )
 Set-StrictMode -Version Latest
@@ -11,24 +12,33 @@ $root = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path $root ('build\installer-tests-' + [guid]::NewGuid().ToString('N'))
 $game = Join-Path $testRoot 'game'
 $package = Join-Path $testRoot 'package'
-New-Item -ItemType Directory -Path $game,$package | Out-Null
+$tools = Join-Path $testRoot 'tools'
+New-Item -ItemType Directory -Path $game,$package,$tools,(Join-Path $package 'Darksiders2DLL-info') | Out-Null
 Copy-Item -LiteralPath $GameExecutable -Destination (Join-Path $game 'Darksiders2.exe')
+# Install.ps1 is not in the ZIP: it runs from the repository with -PackageDirectory.
+$installer = Join-Path $tools 'Install.ps1'
+Copy-Item -LiteralPath (Join-Path $root 'distribution\Install.ps1') -Destination $installer
+$manifestPath = Join-Path $package 'Darksiders2DLL-info\manifest.json'
 if ($PackageDirectory) {
-    foreach ($name in @('Install.ps1','dinput8.dll','Darksiders2DLL.ini','manifest.json')) {
+    foreach ($name in @('dinput8.dll','Darksiders2DLL.ini','Darksiders2DLL-info\manifest.json')) {
         Copy-Item -LiteralPath (Join-Path $PackageDirectory $name) -Destination (Join-Path $package $name)
     }
 } else {
-    Copy-Item -LiteralPath (Join-Path $root 'distribution\Install.ps1') -Destination $package
+    $version = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'bootstrap.cpp') -Raw),
+        'SESSION_START", L"version=([A-Za-z0-9.-]+) ').Groups[1].Value
+    if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "La version $version no es de Release: Install.ps1 la rechazaria." }
     Copy-Item -LiteralPath (Join-Path $root 'distribution\Darksiders2DLL.ini') -Destination $package
     Copy-Item -LiteralPath $DllPath -Destination (Join-Path $package 'dinput8.dll')
-    @{version='0.4.0'; dllSha256=(Get-FileHash -LiteralPath $DllPath).Hash;
+    @{version=$version; dllSha256=(Get-FileHash -LiteralPath $DllPath).Hash;
       configSha256=(Get-FileHash -LiteralPath (Join-Path $package 'Darksiders2DLL.ini')).Hash} |
-        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $package 'manifest.json') -Encoding UTF8
+        ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 }
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $checks = [System.Collections.Generic.List[string]]::new()
 function Require([bool]$Condition, [string]$Message) { if (!$Condition) { throw $Message } }
 function Invoke-Installer([string]$Name, [bool]$Success, [string]$Action='Install', [string]$Replace='', [string]$Directory=$game) {
-    $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $package 'Install.ps1'),'-GameDirectory',$Directory,'-Action',$Action)
+    $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-GameDirectory',$Directory,'-Action',$Action,
+        '-PackageDirectory',$package)
     if ($Replace) { $arguments += @('-ReplaceSha256',$Replace) }
     # Bypass is scoped to this trusted test child, never persisted or shipped as
     # part of the installer. All modifications stay in this workspace fixture.
@@ -56,6 +66,8 @@ $preservedUpak = (Get-FileHash -LiteralPath $upak).Hash
 
 Invoke-Installer 'fresh-install' $true
 Require ((Get-FileHash -LiteralPath $dll).Hash -eq (Get-FileHash -LiteralPath $DllPath).Hash) 'Wrong installed DLL'
+$state = Get-Content -LiteralPath (Join-Path $game 'Darksiders2DLL.install.json') -Raw | ConvertFrom-Json
+Require ($state.version -eq $manifest.version) 'Installed state does not record the manifest version'
 Invoke-Installer 'verify' $true 'Verify'
 Invoke-Installer 'duplicate-refused' $false
 Invoke-Installer 'fresh-uninstall' $true 'Uninstall'
@@ -82,6 +94,13 @@ $packageDll = Join-Path $package 'dinput8.dll'
 Invoke-Installer 'tampered-package-refused' $false
 Require (!(Test-Path -LiteralPath $dll)) 'Tampered package installed DLL'
 Copy-Item -LiteralPath $DllPath -Destination $packageDll -Force
+$releaseManifest = [IO.File]::ReadAllBytes($manifestPath)
+$trial = $manifest.PSObject.Copy()
+$trial.version = "$($manifest.version)-trial"
+$trial | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+Invoke-Installer 'trial-manifest-refused' $false
+Require (!(Test-Path -LiteralPath $dll)) 'Trial manifest installed DLL'
+[IO.File]::WriteAllBytes($manifestPath, $releaseManifest)
 
 $lock = [IO.File]::Open((Join-Path $game 'Darksiders2.exe'),'Open','Read','Read')
 try { Invoke-Installer 'busy-executable-refused' $false } finally { $lock.Dispose() }
@@ -99,7 +118,9 @@ Require ((Get-FileHash -LiteralPath $mod).Hash -eq $preservedMod) 'User mods cha
 Require ((Get-FileHash -LiteralPath $upak).Hash -eq $preservedUpak) 'Package changed'
 # Exercise the actual documented repeated-script workflow in one PS session,
 # with a missing INI so the default-configuration creation is covered too.
+# Here the script sits in the extracted package and finds it without -PackageDirectory.
 Remove-Item -LiteralPath $config
+Copy-Item -LiteralPath $installer -Destination (Join-Path $package 'Install.ps1')
 $sameSession = Join-Path $testRoot 'same-session.ps1'
 @'
 param([string]$Installer,[string]$Game)
@@ -111,10 +132,10 @@ $ErrorActionPreference = 'Stop'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sameSession -Installer (Join-Path $package 'Install.ps1') -Game $game
 Require ($LASTEXITCODE -eq 0) 'Repeated installer invocation failed'
 Require ((Test-Path -LiteralPath $config) -and !(Test-Path -LiteralPath $dll)) 'Default INI creation/uninstall failed'
-$checks.Add('same-session-install-verify-uninstall')
+$checks.Add('same-session-install-verify-uninstall-from-package-folder')
 $checks.Add('default-ini-created-and-preserved')
-$result = @{status='PASS'; dllSha256=(Get-FileHash -LiteralPath $DllPath).Hash;
-    installerSha256=(Get-FileHash -LiteralPath (Join-Path $package 'Install.ps1')).Hash;
+$result = @{status='PASS'; version=$manifest.version; dllSha256=(Get-FileHash -LiteralPath $DllPath).Hash;
+    installerSha256=(Get-FileHash -LiteralPath $installer).Hash;
     checks=$checks.ToArray(); fixture=$testRoot; realGameModified=$false}
 $result | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $testRoot 'installer-validation.json') -Encoding UTF8
 Write-Output "installer_tests: PASS ($($checks.Count) cases). $testRoot"

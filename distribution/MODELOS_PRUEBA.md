@@ -35,7 +35,8 @@ culling o animación.
 
 `models=override_positions` conserva el contrato anterior, exclusivamente XYZ.
 El contrato nuevo se usa con `models=observe` y `models=override_shape`.
-Los modelos siguen desactivados por defecto (`models=off`).
+Desde la 0.11.0 el valor por defecto es `models=override_unchecked` (cualquier
+malla, también más grande que la original); `models=off` los desactiva.
 
 ## Revisión previa
 

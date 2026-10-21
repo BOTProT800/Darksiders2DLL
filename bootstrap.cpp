@@ -1023,7 +1023,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.12.0-tested-limits-trial mode=asset_loader");
+            LogEvent(L"SESSION_START", L"version=0.12.0 mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";

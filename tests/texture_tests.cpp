@@ -317,6 +317,7 @@ void TestTextureResize() {
         "a side over 16384 was refused");
     const auto mode=ParseLoaderConfig("[loader]\ntextures=resize");
     Check(mode.valid&&mode.config.native_textures&&mode.config.resize_textures&&
+        ParseLoaderConfig("[loader]").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=native").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=exact").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=resize\ntextures=native").valid,"resize texture mode failed");
