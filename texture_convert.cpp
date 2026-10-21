@@ -279,6 +279,35 @@ void Encode(const Image& image, const DdsFormat format, std::vector<std::byte>& 
 bool CanConvertDdsFormat(const DdsFormat format) noexcept {
     return BlockBytes(format) != 0 || PixelBytes(format) != 0;
 }
+std::optional<std::vector<std::byte>> ExpandDdsToBgra8(const std::span<const std::byte> bytes,
+                                                       const DdsMetadata& metadata) {
+    const bool rgba = metadata.format == DdsFormat::rgba8;
+    if ((!rgba && metadata.format != DdsFormat::bgr8) || metadata.has_dx10_header || metadata.header_size != 128 ||
+        bytes.size() != 128 + metadata.payload_size) return std::nullopt;
+    const std::size_t source_pixel = rgba ? 4 : 3, pixels = static_cast<std::size_t>(metadata.payload_size) / source_pixel;
+    std::vector<std::byte> out(bytes.begin(), bytes.begin() + 128);
+    out.resize(128 + pixels * 4);
+    const auto put = [&out](const std::size_t offset, const std::uint32_t value) {
+        for (std::size_t i = 0; i < 4; ++i) out[offset + i] = static_cast<std::byte>(value >> (i * 8));
+    };
+    // DDSD_PITCH instead of DDSD_LINEARSIZE, and the A8R8G8B8 pixel format.
+    std::uint32_t flags = 0;
+    for (std::size_t i = 0; i < 4; ++i) flags |= static_cast<std::uint32_t>(ByteAt(bytes, 8 + i)) << (i * 8);
+    put(8, (flags | 0x8u) & ~0x80000u);
+    put(20, metadata.width * 4);
+    put(80, 0x41); put(84, 0); put(88, 32);
+    put(92, 0x00FF0000); put(96, 0x0000FF00); put(100, 0x000000FF); put(104, 0xFF000000);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const auto* in = bytes.data() + 128 + i * source_pixel;
+        auto* to = out.data() + 128 + i * 4;
+        to[0] = rgba ? in[2] : in[0];
+        to[1] = in[1];
+        to[2] = rgba ? in[0] : in[2];
+        to[3] = rgba ? in[3] : std::byte{0xFF};
+    }
+    return out;
+}
+
 DdsConversionResult ConvertDdsToContract(const std::span<const std::byte> replacement, const DdsMetadata& source,
                                          const std::span<const std::byte> target_header, const DdsMetadata& target) {
     DdsConversionResult result;

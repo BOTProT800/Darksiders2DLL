@@ -1,6 +1,16 @@
 # Darksiders2DLL
 
-**Código actual: 0.11.0-texture-resize-trial.** Con `textures=resize`, una
+**Código actual: 0.12.0-tested-limits-trial.** Solo puede haber restricciones
+de contenido que hayan fallado en el juego ([regla, registro de fallos y
+confirmaciones](RESTRICCIONES.md)). Como ninguna lo ha hecho, esta versión
+retira las que eran predicciones: `textures=resize` y
+`models=override_unchecked` pasan a ser los valores por defecto; los DDS DX10,
+RGBA8 y BGR8 llegan a su tamaño; los lados BC no múltiplos de 4 y los de más de
+16384 solo dejan un aviso `resize_warning` en el log; se quitan los
+presupuestos de 64 MiB por archivo y 256 MiB en total y los topes fijos del
+lector de `.2`. Pendiente de probar en el juego.
+
+**0.11.0-texture-resize-trial.** Con `textures=resize`, una
 textura DDS o PNG de otro tamaño, formato o número de mips (por ejemplo
 512×1024 o 2048² en lugar de un original de 1024²) llega al motor tal cual, sin
 convertirla al contrato original: la DLL reescribe en memoria su `extra` de

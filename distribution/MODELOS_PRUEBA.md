@@ -1,5 +1,12 @@
 # Prueba de forma: 0.5.1-shape-trial
 
+> **Desde 0.12.0-tested-limits-trial** el valor por defecto es
+> `models=override_unchecked`, y `override_positions` y `override_shape` son
+> alias suyos: las reglas de contenido de este contrato nunca se vieron fallar
+> en el juego ([RESTRICCIONES.md](../RESTRICCIONES.md)). Se conservan solo en las
+> comprobaciones offline. `models=off` y `models=observe` siguen disponibles.
+> Este documento describe la prueba original de la 0.5.1.
+
 Esta DLL experimental acepta la edición de `death_head.2` exportada por ANANSI
 sin eliminar sus normales ni tangentes recalculadas. El paquete local está en
 `build/shape-trial/package`. Pasar las pruebas fuera del juego no demuestra la

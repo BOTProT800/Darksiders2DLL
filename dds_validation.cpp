@@ -298,6 +298,45 @@ DdsValidationResult ValidateDds(
     return result;
 }
 
+std::optional<std::vector<std::byte>> LegacyDdsBytes(
+    const std::span<const std::byte> bytes,
+    const DdsMetadata& metadata) {
+    constexpr std::size_t kLegacyHeaderSize = 128;
+    constexpr std::uint32_t kDdpfAlphaPixels = 0x00000001;
+    if (metadata.header_size < kLegacyHeaderSize || metadata.header_size > bytes.size() ||
+        bytes.size() - metadata.header_size != metadata.payload_size) {
+        return std::nullopt;
+    }
+    std::uint32_t pixel_flags = kDdpfFourCc, four_cc = 0, bits = 0, red = 0, green = 0, blue = 0, alpha = 0;
+    switch (metadata.format) {
+    case DdsFormat::bc1: four_cc = kFourCcDxt1; break;
+    case DdsFormat::bc2: four_cc = kFourCcDxt3; break;
+    case DdsFormat::bc3: four_cc = kFourCcDxt5; break;
+    case DdsFormat::bc4: four_cc = kFourCcAti1; break;
+    case DdsFormat::bc5: four_cc = kFourCcAti2; break;
+    case DdsFormat::bgr8:
+        pixel_flags = kDdpfRgb; bits = 24; red = 0x00FF0000; green = 0x0000FF00; blue = 0x000000FF;
+        break;
+    case DdsFormat::bgra8:
+        pixel_flags = kDdpfRgb | kDdpfAlphaPixels; bits = 32;
+        red = 0x00FF0000; green = 0x0000FF00; blue = 0x000000FF; alpha = 0xFF000000;
+        break;
+    case DdsFormat::rgba8:
+        pixel_flags = kDdpfRgb | kDdpfAlphaPixels; bits = 32;
+        red = 0x000000FF; green = 0x0000FF00; blue = 0x00FF0000; alpha = 0xFF000000;
+        break;
+    default: return std::nullopt;
+    }
+    std::vector<std::byte> legacy(bytes.begin(), bytes.begin() + kLegacyHeaderSize);
+    legacy.insert(legacy.end(), bytes.begin() + static_cast<std::ptrdiff_t>(metadata.header_size), bytes.end());
+    const auto put = [&legacy](const std::size_t offset, const std::uint32_t value) {
+        for (std::size_t i = 0; i < 4; ++i) legacy[offset + i] = static_cast<std::byte>(value >> (i * 8));
+    };
+    put(80, pixel_flags); put(84, four_cc); put(88, bits);
+    put(92, red); put(96, green); put(100, blue); put(104, alpha);
+    return legacy;
+}
+
 std::wstring_view DdsFormatName(const DdsFormat format) noexcept {
     switch (format) {
     case DdsFormat::unknown:

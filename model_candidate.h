@@ -23,6 +23,7 @@ struct ModelResize final {
     std::uint32_t original_header_size{}, replacement_header_size{};
     std::uint32_t original_size{};
     Sha256Digest original_sha256{};
+    std::vector<std::wstring> warnings;  // untested predictions, logged only
 };
 struct ModelCandidate final {
     PackageResourceIdentity identity;

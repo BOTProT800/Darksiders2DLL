@@ -5,7 +5,8 @@
 
 namespace ds2::modding {
 namespace {
-constexpr std::uint32_t kMaxSide = 16384;
+// The extra stores each side in a u16.
+constexpr std::uint32_t kMaxSide = 0xFFFF;
 constexpr std::size_t kHeaderSize = 128;
 
 std::uint64_t LevelBytes(const DdsFormat format, const std::uint32_t width, const std::uint32_t height) noexcept {
@@ -78,21 +79,21 @@ std::optional<TextureResize> PlanTextureResize(
     }
     const auto extra = EncodeTextureEngineExtra(replacement);
     if (!extra) {
-        error = L"resize supports BGRA8, BC1, BC2 and BC3 2D textures up to 16384 per side";
+        error = L"the DLL knows engine codes only for BGRA8, BC1, BC2 and BC3 2D textures, up to 65535 per side";
         return std::nullopt;
     }
     if (*extra == *packaged) {
         error = L"replacement has the original contract";
         return std::nullopt;
     }
-    // D3D9 creates block-compressed textures only with sides divisible by 4,
-    // and the handler (0x75A63C) does not check that CreateTexture worked.
-    if (replacement.format != DdsFormat::bgra8 && (replacement.width % 4 != 0 || replacement.height % 4 != 0)) {
-        error = L"BC1, BC2 and BC3 replacements need sides divisible by 4";
-        return std::nullopt;
-    }
     TextureResize plan{entry.metadata_size, entry.extra_offset, entry.metadata_sha256, *extra,
-        std::move(storage), replacement, {}, {}};
+        std::move(storage), replacement, {}, {}, {}};
+    // The handler (0x75A63C) does not check that CreateTexture worked. These
+    // are D3D9 rules from its documentation, not failures seen in game.
+    if (replacement.format != DdsFormat::bgra8 && (replacement.width % 4 != 0 || replacement.height % 4 != 0))
+        plan.warnings.push_back(L"untested: D3D9 documents BC sides as multiples of 4");
+    if (replacement.width > 16384 || replacement.height > 16384)
+        plan.warnings.push_back(L"untested: sides over 16384 may exceed the device limit");
     const auto levels = TextureEngineLevels(replacement), original_levels = TextureEngineLevels(original);
     plan.replacement_runs = Runs(levels);
     plan.original_runs = Runs(original_levels);

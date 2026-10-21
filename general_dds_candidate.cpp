@@ -152,24 +152,33 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 continue;
             }
 
-            const auto storage_size = static_cast<std::uint64_t>(
-                asset->storage->Size());
+            // The engine skips a 128-byte header: a DX10 file is delivered
+            // behind the legacy header of the same format.
+            std::shared_ptr<const ByteStorage> source = asset->storage;
+            DdsMetadata dds = *asset->dds;
+            if (dds.has_dx10_header) {
+                auto legacy = LegacyDdsBytes(source->Bytes(), dds);
+                auto made = legacy ? MakeByteStorage(std::move(*legacy)) : ByteLoadResult{};
+                const auto revalidated = made ? ValidateDds(made.storage->Bytes()) : DdsValidationResult{};
+                if (!revalidated) {
+                    AddIssue(
+                        result, options, package_entry,
+                        GeneralDdsCandidateIssueCode::dx10_header_not_supported,
+                        asset->mod_id,
+                        L"the DLL cannot rewrite this DX10 header as a legacy one");
+                    continue;
+                }
+                source = std::move(made.storage);
+                dds = *revalidated.metadata;
+            }
+
+            const auto storage_size = static_cast<std::uint64_t>(source->Size());
             if (!options.allow_native_upload && storage_size != package_entry.original_size) {
                 AddIssue(
                     result, options, package_entry,
                     GeneralDdsCandidateIssueCode::original_size_mismatch,
                     asset->mod_id,
                     L"mod DDS byte count differs from the package member size");
-                continue;
-            }
-
-            const DdsMetadata& dds = *asset->dds;
-            if (dds.has_dx10_header) {
-                AddIssue(
-                    result, options, package_entry,
-                    GeneralDdsCandidateIssueCode::dx10_header_not_supported,
-                    asset->mod_id,
-                    L"DX10 DDS headers are outside the current stream contract");
                 continue;
             }
 
@@ -197,7 +206,7 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
             // A texture the original's format can hold is converted to the
             // original contract and takes the same-size stream route, the one
             // confirmed in game. Native upload stays as the fallback.
-            std::shared_ptr<const ByteStorage> storage = asset->storage;
+            std::shared_ptr<const ByteStorage> storage = source;
             DdsMetadata delivered = dds;
             bool converted = false;
             std::wstring conversion_error;
@@ -205,7 +214,7 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 options.convert_to_original) {
                 auto conversion = original->header.empty()
                     ? DdsConversionResult{{}, L"original header unavailable"}
-                    : ConvertDdsToContract(asset->storage->Bytes(), dds, original->header, original_dds);
+                    : ConvertDdsToContract(source->Bytes(), dds, original->header, original_dds);
                 if (conversion) {
                     auto made = MakeByteStorage(std::move(conversion.bytes));
                     if (made) {
@@ -222,7 +231,21 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
             std::optional<TextureResize> resize;
             std::wstring resize_error;
             if (different_contract && options.allow_native_upload && options.resize_textures) {
-                resize = PlanTextureResize(package_entry, original_dds, asset->storage, dds, resize_error);
+                // RGBA8 and BGR8 have no engine code: they go as BGRA8, still
+                // at their own size, instead of being resampled.
+                auto resize_source = source;
+                auto resize_dds = dds;
+                if (dds.format == DdsFormat::rgba8 || dds.format == DdsFormat::bgr8) {
+                    auto expanded = ExpandDdsToBgra8(source->Bytes(), dds);
+                    auto made = expanded ? MakeByteStorage(std::move(*expanded)) : ByteLoadResult{};
+                    const auto revalidated = made ? ValidateDds(made.storage->Bytes()) : DdsValidationResult{};
+                    if (revalidated) {
+                        resize_source = std::move(made.storage);
+                        resize_dds = *revalidated.metadata;
+                    }
+                }
+                resize = PlanTextureResize(package_entry, original_dds, std::move(resize_source), resize_dds,
+                                           resize_error);
             }
             const bool native_upload = !converted && (different_contract || asset->source_is_png);
             if (different_contract && !options.allow_native_upload) {
@@ -234,7 +257,8 @@ GeneralDdsCandidateBuildResult BuildGeneralDdsCandidateSnapshot(
                 continue;
             }
 
-            if (native_upload && (!options.allow_native_upload ||
+            // A texture with a resize plan does not depend on the native path.
+            if (native_upload && !resize && (!options.allow_native_upload ||
                 NativeTextureFormat(dds.format) == kUnsupportedNativeTextureFormat ||
                 NativeTextureFormat(original_dds.format) == kUnsupportedNativeTextureFormat ||
                 dds.width > 16384 || dds.height > 16384)) {

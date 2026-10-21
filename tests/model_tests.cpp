@@ -163,17 +163,23 @@ void TestModelResize(const std::filesystem::path& temporary_root) {
             plan.extra == EncodeModelEngineExtra(larger_counts) && plan.buffers == ModelEngineBuffers(larger_counts) &&
             plan.original_header_size == 101 && plan.replacement_header_size == 104 && plan.extra.size() == extra.size(),
             "larger mesh resize rejected");
-    // The package entry must repeat the original header, the replacement must
-    // span exactly its engine buffers, indices stay inside the mesh, and the
-    // record kind follows the vertex sign.
+    // The package entry must repeat the original header and the replacement
+    // must span exactly its engine buffers: without that the DLL cannot know
+    // what to deliver. Indices outside the mesh or a record kind against the
+    // vertex sign were never seen failing in game: delivered with a warning.
+    Require(plan.warnings.empty(), "consistent mesh warned");
     auto wrong_extra = extra; wrong_extra[12] ^= std::byte{1};
     Require(!PlanModelResize(original, larger, wrong_extra), "metadata schema mismatch accepted");
     auto longer = larger; longer.push_back(std::byte{});
     Require(!PlanModelResize(original, longer, extra), "trailing replacement bytes accepted");
     auto bad_index = larger; Put(bad_index, 104 + 8, std::uint16_t{12});
-    Require(!PlanModelResize(original, bad_index, extra), "index outside the mesh accepted");
+    const auto index_plan = PlanModelResize(original, bad_index, extra);
+    Require(bool(index_plan) && index_plan.warnings.size() == 1 &&
+            index_plan.warnings[0].find(L"index range") != std::wstring::npos, "index outside the mesh refused");
     auto wrong_kind = larger; wrong_kind[28] = std::byte{0};
-    Require(!PlanModelResize(original, wrong_kind, extra), "record kind against the vertex sign accepted");
+    const auto kind_plan = PlanModelResize(original, wrong_kind, extra);
+    Require(bool(kind_plan) && kind_plan.warnings.size() == 1 &&
+            kind_plan.warnings[0].find(L"untested: mesh record") == 0, "record kind against the vertex sign refused");
 
     // Package metadata block: unrelated entries, this member's, a final table.
     std::vector<std::byte> block(24);
@@ -437,16 +443,19 @@ void TestModels(const std::filesystem::path& temporary_root) {
     TestModelUncheckedFit(temporary_root);
     TestModelResize(temporary_root);
     TestModelPairTable();
-    Require(ParseLoaderConfig("[loader]").config.models == ModelMode::off, "models default on");
-    for (const auto* value : {"off", "observe", "override_positions", "override_shape", "override_unchecked"}) {
+    // override_unchecked by default; the old strict modes are its aliases.
+    Require(ParseLoaderConfig("[loader]").config.models == ModelMode::override_unchecked, "models default not unchecked");
+    Require(ParseLoaderConfig("[loader]\nmodels=off").config.models == ModelMode::off &&
+            ParseLoaderConfig("[loader]\nmodels=observe").config.models == ModelMode::observe, "model mode lost");
+    for (const auto* value : {"override_positions", "override_shape", "override_unchecked"}) {
         const auto cfg = ParseLoaderConfig(std::string("[loader]\nmodels=") + value);
-        Require(cfg.valid, "model mode rejected");
+        Require(cfg.valid && cfg.config.models == ModelMode::override_unchecked, "model mode is not unchecked");
     }
     const auto observe = ParseLoaderConfig("[loader]\nmode=observe\nmodels=override_positions");
     Require(observe.valid && !observe.config.write_enabled, "global observation lost");
     const auto shape_observe = ParseLoaderConfig("[loader]\nmode=observe\nmodels=override_shape");
     Require(shape_observe.valid && !shape_observe.config.write_enabled &&
-            shape_observe.config.models == ModelMode::override_shape, "shape global observation lost");
+            shape_observe.config.models == ModelMode::override_unchecked, "shape global observation lost");
     for (const auto* value : {"models=override", "models=true", "models=off\nmodels=observe"})
         Require(!ParseLoaderConfig(std::string("[loader]\n") + value).valid, "invalid model config accepted");
     std::cout << "model_validation: PASS (legacy positions, bounded shape, orthonormal basis, immutable bounds/UV/skin, deletion expansion, unchecked fit, malformed inputs, opt-in)\n";
@@ -474,7 +483,7 @@ int CheckModelFiles(const std::filesystem::path& original, const std::filesystem
             ModelEngineCounts counts;
             const auto plan = ReadModelEngineCounts(before.storage->Bytes(), counts)
                 ? PlanModelResize(before.storage->Bytes(), after.storage->Bytes(), EncodeModelEngineExtra(counts))
-                : ModelResizePlan{{}, {}, 0, 0, L"original count tables are invalid"};
+                : ModelResizePlan{{}, {}, 0, 0, {}, L"original count tables are invalid"};
             if (!plan) {
                 std::wcerr << L"MODEL_REJECTED: unchecked: " << fit.error << L"; resize: " << plan.error << L'\n';
                 return 1;

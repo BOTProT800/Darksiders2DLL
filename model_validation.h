@@ -6,8 +6,12 @@
 #include <vector>
 
 namespace ds2::modding {
+// The engine masks its read sizes to 31 bits: the only size limit of a .2.
+inline constexpr std::uint64_t kMaxModelBytes = 0x7FFFFFFF;
 // unchecked: no content rule at all (geometry, UV, skin, bounds, bones); only
 // the original read sizes, which the engine takes from the packaged member.
+// The loader always uses it; positions_only and bounded_shape remain for the
+// offline checks (their rules were never seen failing in game).
 enum class ModelEditContract { positions_only, bounded_shape, unchecked };
 struct ModelVertexBlock final {
     std::uint32_t offset{}, size{}, vertex_count{}, stride{}, position_offset{};
@@ -102,6 +106,8 @@ struct ModelResizePlan final {
     std::vector<std::byte> extra;            // replacement counts, same length as the original
     std::vector<ModelEngineBuffer> buffers;  // the engine's reads of the replacement, in order
     std::uint32_t original_header_size{}, replacement_header_size{};
+    // Untested predictions about the header (RESTRICCIONES.md): logged only.
+    std::vector<std::wstring> warnings;
     std::wstring error;
     [[nodiscard]] explicit operator bool() const noexcept { return error.empty(); }
 };

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -59,8 +60,10 @@ struct PackageDdsContractCatalogIssue final {
 };
 
 struct PackageDdsContractCatalogOptions final {
-    std::uint64_t max_asset_bytes{128ull * 1024ull * 1024ull};
-    std::uint64_t max_total_asset_bytes{1024ull * 1024ull * 1024ull};
+    // No byte budget by default: no fixed limit was ever seen failing in game
+    // (RESTRICCIONES.md). Tests set small ones to exercise the checks.
+    std::uint64_t max_asset_bytes{(std::numeric_limits<std::uint64_t>::max)()};
+    std::uint64_t max_total_asset_bytes{(std::numeric_limits<std::uint64_t>::max)()};
     std::uint64_t max_compressed_stream_bytes{1024ull * 1024ull * 1024ull};
     std::uint64_t max_uncompressed_stream_bytes{1024ull * 1024ull * 1024ull};
     std::size_t max_issue_count{1'024};

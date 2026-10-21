@@ -1908,6 +1908,37 @@ void TestTextureResizeCandidates(const std::filesystem::path& root) {
             "texture extra schema mismatch accepted");
     static_cast<void>(mismatched_catalog);
     write_package({extra_of(originals[0]), extra_of(originals[1])});
+    // A DX10 header and an RGBA8 file, never refused in game, also go at their
+    // own size: the first behind its legacy header, the second as BGRA8.
+    {
+        auto dx10 = larger;
+        PutU32(dx10, 84, 0x30315844);  // "DX10"
+        dx10.insert(dx10.begin() + 128, 20, std::byte{});
+        PutU32(dx10, 128, 77);  // DXGI_FORMAT_BC3_UNORM
+        PutU32(dx10, 132, 3);   // TEXTURE2D
+        PutU32(dx10, 140, 1);   // array size
+        std::vector<std::byte> rgba(128 + 4 * 2 * 4 + 2 * 1 * 4 + 4, std::byte{0x5C});
+        std::fill_n(rgba.begin(), 128, std::byte{});
+        for (const auto [offset, value] : std::array<std::pair<std::size_t, std::uint32_t>, 15>{{
+                 {0, 0x20534444}, {4, 124}, {8, 0x00021007}, {12, 2}, {16, 4}, {28, 3}, {76, 32}, {80, 0x41},
+                 {88, 32}, {92, 0xFF}, {96, 0xFF00}, {100, 0xFF0000}, {104, 0xFF000000}, {108, 0x00401008}, {112, 0}}})
+            PutU32(rgba, offset, value);
+        WriteBytes(mods / L"first.dds", dx10);
+        WriteBytes(mods / L"second.dds", rgba);
+        const auto [formats, formats_catalog] = build(true);
+        static_cast<void>(formats_catalog);
+        const auto& from_dx10 = formats->Entries()[0];
+        const auto& from_rgba = formats->Entries()[1];
+        Require(from_dx10.resize && std::ranges::equal(from_dx10.resize->storage->Bytes(), larger) &&
+                    from_dx10.resize->dds.format == DdsFormat::bc3 && !from_dx10.resize->dds.has_dx10_header,
+                "DX10 replacement not delivered at its own size");
+        Require(from_rgba.resize && from_rgba.resize->dds.format == DdsFormat::bgra8 &&
+                    from_rgba.resize->dds.width == 4 && from_rgba.resize->dds.height == 2 &&
+                    from_rgba.resize->dds.mip_count == 3 && from_rgba.resize->storage->Size() == rgba.size(),
+                "RGBA8 replacement not delivered at its own size as BGRA8");
+        WriteBytes(mods / L"first.dds", larger);
+        WriteBytes(mods / L"second.dds", smaller);
+    }
 #if defined(DS2_TEST_GENERAL_RESOLVER_RUNTIME)
     const auto& first = *catalog->Find(entries[0].identity);
     const auto block = std::span(package).subspan(
@@ -1916,7 +1947,7 @@ void TestTextureResizeCandidates(const std::filesystem::path& root) {
     TestTextureResizeRuntime(*snapshot, originals, block, earlier, next_member);
 #endif
     std::cout << "texture_resize_catalog: PASS (package extras, larger BC3 and smaller BC1, fallback conversion, "
-                 "mode gate, schema mismatch)\n";
+                 "mode gate, schema mismatch, DX10 header, RGBA8 as BGRA8)\n";
 }
 
 void TestByteStorageContainment(const std::filesystem::path& root) {

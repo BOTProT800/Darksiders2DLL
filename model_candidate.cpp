@@ -36,7 +36,7 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
     if (entry.type_id != 2 || !IsNativeModelPath(entry.virtual_path.key) ||
         asset.virtual_path.key != entry.virtual_path.key || !asset.storage ||
         original.size() != entry.original_size || original.empty() ||
-        original.size() > 64ull * 1024 * 1024) {
+        original.size() > kMaxModelBytes) {
         error = L"invalid native model identity/storage";
         return false;
     }
@@ -61,7 +61,8 @@ bool PrepareModelCandidate(const PackageIdentityEntry& entry, const IndexedAsset
                                        ModelResize{entry.metadata_size, entry.extra_offset, entry.metadata_sha256,
                                                    std::move(plan.extra), std::move(plan.buffers),
                                                    plan.original_header_size, plan.replacement_header_size,
-                                                   static_cast<std::uint32_t>(original.size()), original_hash.digest}};
+                                                   static_cast<std::uint32_t>(original.size()), original_hash.digest,
+                                                   std::move(plan.warnings)}};
             return true;
         }
         spare_vertices = fitted.spare_vertices;
@@ -140,9 +141,7 @@ ModelCandidateBuildResult BuildModelCandidates(const std::filesystem::path& game
             if (entry.type_id == 2) requested.push_back(entry);
             else result.issues.push_back(entry.virtual_path.key + L": not a native geometry member");
         }
-        PackageDdsContractCatalogOptions limits;
-        limits.max_asset_bytes = 64ull * 1024 * 1024;
-        limits.max_total_asset_bytes = 256ull * 1024 * 1024;
+        const PackageDdsContractCatalogOptions limits;
         const auto originals = ReadMediaPackageMembers(game_directory, requested, limits);
         if (!originals) { result.error = L"original model extraction failed: " + originals.diagnostics.detail; return result; }
         for (const auto& original : originals.members) {

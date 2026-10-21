@@ -19,8 +19,9 @@ namespace ds2::modding {
 inline constexpr std::size_t kTextureEngineExtraSize = 7;
 using TextureEngineExtra = std::array<std::byte, kTextureEngineExtraSize>;
 
-// Empty for anything the engine cannot take: formats other than BGRA8 and
-// BC1-BC3, DX10 headers, sides over 16384 or more than 255 mips.
+// Empty for anything the extra cannot describe: formats without an engine
+// code (only BGRA8 and BC1-BC3 are known), DX10 headers, sides over the u16
+// fields or more than 255 mips.
 [[nodiscard]] std::optional<TextureEngineExtra> EncodeTextureEngineExtra(const DdsMetadata& dds) noexcept;
 // Byte size of each mip level, as 0x7FC560 computes them.
 [[nodiscard]] std::vector<std::uint32_t> TextureEngineLevels(const DdsMetadata& dds);
@@ -44,6 +45,9 @@ struct TextureResize final {
     // The engine's first payload read is a run of whole levels from the top,
     // as long as the texture's memory is contiguous: one size per prefix.
     std::vector<std::uint32_t> replacement_runs, original_runs;
+    // Untested predictions about how the game takes this texture, logged but
+    // never refused (RESTRICCIONES.md): only a failure seen in game blocks.
+    std::vector<std::wstring> warnings;
 };
 // Requires the package extra to repeat the original contract (schema check).
 [[nodiscard]] std::optional<TextureResize> PlanTextureResize(

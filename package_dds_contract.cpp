@@ -520,7 +520,7 @@ PackageMemberReadResult ReadMediaPackageMembers(
     PackageMemberReadResult result;
     auto& diagnostics = result.diagnostics;
     try {
-        if (game_directory.empty() || requested.size() > 16'384 ||
+        if (game_directory.empty() ||
             limits.max_asset_bytes == 0 || limits.max_total_asset_bytes == 0 ||
             limits.max_compressed_stream_bytes == 0 ||
             limits.max_uncompressed_stream_bytes == 0 || limits.max_issue_count == 0) {

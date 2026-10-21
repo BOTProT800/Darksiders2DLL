@@ -49,9 +49,8 @@ LoaderConfigResult ParseLoaderConfig(std::string_view text) {
         } else if (key == "models" && !models) {
             if (value == "off") result.config.models = ModelMode::off;
             else if (value == "observe") result.config.models = ModelMode::observe;
-            else if (value == "override_positions") result.config.models = ModelMode::override_positions;
-            else if (value == "override_shape") result.config.models = ModelMode::override_shape;
-            else if (value == "override_unchecked") result.config.models = ModelMode::override_unchecked;
+            else if (value == "override_unchecked" || value == "override_positions" || value == "override_shape")
+                result.config.models = ModelMode::override_unchecked;
             else return result;
             models = true;
         } else if (key == "animations" && !animations) {

@@ -652,8 +652,6 @@ namespace
             LogEvent(L"PACKAGE_IDENTITY_CATALOG_READY", summary);
 
             ds2::modding::PackageDdsContractCatalogOptions contract_options;
-            contract_options.max_asset_bytes = 64ull * 1024 * 1024;
-            contract_options.max_total_asset_bytes = 256ull * 1024 * 1024;
             auto contracts =
                 ds2::modding::BuildMediaPackageDdsContractCatalog(
                     game_directory, built.snapshot.get(), contract_options);
@@ -824,6 +822,11 @@ namespace
                     detail.append(std::to_wstring(resize.metadata_size));
                     detail.append(L" extra_offset=");
                     detail.append(std::to_wstring(resize.extra_offset));
+                    for (const auto& warning : resize.warnings) {
+                        detail.append(L" resize_warning=\"");
+                        detail.append(warning);
+                        detail.push_back(L'"');
+                    }
                 } else if (!candidate.resize_error.empty()) {
                     detail.append(L" resize_error=\"");
                     detail.append(candidate.resize_error);
@@ -1020,7 +1023,7 @@ namespace
                 return;
             }
             g_logger.store(std::move(logger_result.logger), std::memory_order_release);
-            LogEvent(L"SESSION_START", L"version=0.11.0-texture-resize-trial mode=asset_loader");
+            LogEvent(L"SESSION_START", L"version=0.12.0-tested-limits-trial mode=asset_loader");
 
             const auto build = ds2::modding::IdentifyCurrentGameBuild();
             std::wstring build_detail = L"path=";
@@ -1064,8 +1067,6 @@ namespace
             index_options.include_native_models = config.config.models != ds2::modding::ModelMode::off;
             index_options.include_png = config.config.native_textures;
             index_options.include_animations = config.config.animations != ds2::modding::AnimationMode::off;
-            index_options.max_asset_file_size = 64ull * 1024 * 1024;
-            index_options.max_total_bytes = 256ull * 1024 * 1024;
             auto index_result = ds2::modding::BuildModIndex(game_directory / L"mods", index_options);
             if (!index_result)
             {
@@ -1102,12 +1103,9 @@ namespace
             InitializeDdsCatalog(game_directory, *snapshot, config.config.native_textures,
                                  config.config.resize_textures);
             if (config.config.models != ds2::modding::ModelMode::off) {
-                const auto contract = config.config.models == ds2::modding::ModelMode::override_positions
-                    ? ds2::modding::ModelEditContract::positions_only
-                    : config.config.models == ds2::modding::ModelMode::override_unchecked
-                    ? ds2::modding::ModelEditContract::unchecked
-                    : ds2::modding::ModelEditContract::bounded_shape;
-                const auto models = ds2::modding::BuildModelCandidates(game_directory, *snapshot, contract);
+                // Observation validates with the same rules it would write with.
+                const auto models = ds2::modding::BuildModelCandidates(game_directory, *snapshot,
+                    ds2::modding::ModelEditContract::unchecked);
                 for (const auto& issue : models.issues) LogEvent(L"MODEL_REJECTED", issue);
                 if (!models.error.empty()) LogEvent(L"MODEL_CATALOG_FAILED", models.error);
                 if (models.snapshot) {
@@ -1129,6 +1127,8 @@ namespace
                             detail.append(L" replacement_header=" + std::to_wstring(candidate.resize->replacement_header_size));
                             detail.append(L" buffers=" + std::to_wstring(candidate.resize->buffers.size()));
                             detail.append(L" metadata_bytes=" + std::to_wstring(candidate.resize->metadata_size));
+                            for (const auto& warning : candidate.resize->warnings)
+                                detail.append(L" resize_warning=\"" + warning + L"\"");
                         } else if (candidate.unchecked_fit) {
                             detail.append(L" unchecked_fit=true mod_bytes=" + std::to_wstring(candidate.mod_bytes));
                             detail.append(L" spare_vertices=" + std::to_wstring(candidate.spare_vertices));
@@ -1139,13 +1139,9 @@ namespace
                     LogEvent(L"MODEL_CATALOG_READY", L"candidates=" + std::to_wstring(models.snapshot->entries.size()));
                     g_model_candidates.store(models.snapshot, std::memory_order_release);
                 }
-                LogEvent(L"MODEL_MODE", config.config.models == ds2::modding::ModelMode::override_positions
-                    ? L"override_positions (experimental)"
-                    : config.config.models == ds2::modding::ModelMode::override_shape
-                    ? L"override_shape (bounded shape, experimental)"
-                    : config.config.models == ds2::modding::ModelMode::override_unchecked
-                    ? L"override_unchecked (no content checks, original read sizes, experimental)"
-                    : L"observe (bounded shape, no model writes)");
+                LogEvent(L"MODEL_MODE", config.config.models == ds2::modding::ModelMode::override_unchecked
+                    ? L"override_unchecked (no content checks; fitted to the original read sizes or resized)"
+                    : L"observe (no content checks, no model writes)");
             }
             // Observation only: the read hook hashes and matches candidate
             // members, but this build has no animation writer.
@@ -1204,8 +1200,6 @@ namespace
                     game_module,
                     game_directory / L"media" / L"media.upak",
                     candidates, config.config.write_enabled, model_candidates,
-                    config.config.models == ds2::modding::ModelMode::override_positions ||
-                    config.config.models == ds2::modding::ModelMode::override_shape ||
                     config.config.models == ds2::modding::ModelMode::override_unchecked,
                     animation_candidates);
                 ds2::modding::EnableNativeTextureWrites(resolver_probe_active && config.config.write_enabled);

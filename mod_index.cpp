@@ -308,13 +308,9 @@ bool IndexMod(
                                     return false;
                                 loaded = std::move(decoded);
                             }
+                            // Without byte budgets a file too large for memory
+                            // is that file's issue: the other mods still load.
                             if (!loaded) {
-                                if (loaded.error == ByteLoadError::allocation_failed) {
-                                    result.error = ModIndexError::allocation_failed;
-                                    result.system_error = loaded.win32_error;
-                                    result.detail = L"asset buffer allocation failed";
-                                    return false;
-                                }
                                 if (loaded.error == ByteLoadError::file_too_large &&
                                     remaining_total < options.max_asset_file_size) {
                                     return FailResourceLimit(

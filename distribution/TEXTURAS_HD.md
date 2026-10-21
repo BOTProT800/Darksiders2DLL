@@ -2,6 +2,18 @@
 
 ## Tamaño propio: `textures=resize` (0.11.0-texture-resize-trial)
 
+**Desde 0.12.0-tested-limits-trial es el valor por defecto**, también sin la
+línea `textures=` en el INI. Además (véase [RESTRICCIONES.md](../RESTRICCIONES.md)):
+
+- Los DDS con cabecera DX10 se entregan con la cabecera clásica de su formato.
+- Los DDS RGBA8 y BGR8 se entregan a su tamaño como BGRA8, sin pérdida.
+- Lados de hasta 65535 (el campo de 16 bits del motor). Los lados BC que no son
+  múltiplos de 4 y los de más de 16384 se entregan con
+  `resize_warning="untested: …"` en el log: nunca se vieron fallar en el juego.
+- No hay presupuesto de 64 MiB por asset ni de 256 MiB en total.
+
+Los requisitos de la lista siguiente son los de la 0.11.0.
+
 Con `textures=resize` en `[loader]`, un DDS o PNG de otro tamaño, formato o
 número de mips se entrega al motor tal cual: una textura de 1024 × 1024 puede
 sustituirse por una de 512 × 1024 o de 2048 × 2048, sin reescalarla al original.

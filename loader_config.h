@@ -4,7 +4,9 @@
 #include <string_view>
 
 namespace ds2::modding {
-enum class ModelMode { off, observe, override_positions, override_shape, override_unchecked };
+// override_positions and override_shape are accepted as aliases of
+// override_unchecked: their content rules were never seen failing in game.
+enum class ModelMode { off, observe, override_unchecked };
 // Observation only: every mode other than off hashes and matches the engine's
 // reads of candidate members. No build writes animation bytes yet.
 enum class AnimationMode { off, observe, override_keys };
@@ -12,9 +14,12 @@ struct LoaderConfig final {
     bool enabled{true};
     bool write_enabled{true};
     bool native_textures{true};
-    // textures=resize: native, plus delivery at the texture's own size.
-    bool resize_textures{false};
-    ModelMode models{ModelMode::off};
+    // textures=resize (the default, confirmed in game): native, plus delivery
+    // at the texture's own size. textures=native resamples to the original.
+    bool resize_textures{true};
+    // override_unchecked by default: it and mesh resize were confirmed in
+    // game, and nothing seen in game justifies keeping models off.
+    ModelMode models{ModelMode::override_unchecked};
     AnimationMode animations{AnimationMode::off};
 };
 struct LoaderConfigResult final {

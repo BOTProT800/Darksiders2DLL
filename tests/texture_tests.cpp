@@ -254,10 +254,13 @@ void TestTextureResize() {
     Check(format(DdsFormat::bgra8)->front()==B{6}&&format(DdsFormat::bc2)->front()==B{16}&&
         format(DdsFormat::bc3)->front()==B{17},"engine formats differ from 0x751260");
     auto dx10=bc1;dx10.has_dx10_header=true;dx10.header_size=148;
-    auto wide=bc1;wide.width=16385;auto mips=bc1;mips.mip_count=256;
+    // Sides are u16 fields of the extra: 65535 is the only side limit.
+    auto wide=bc1;wide.width=65536;auto widest=bc1;widest.width=65535;auto mips=bc1;mips.mip_count=256;
     Check(!format(DdsFormat::rgba8)&&!format(DdsFormat::bgr8)&&!format(DdsFormat::bc4)&&
         !EncodeTextureEngineExtra(dx10)&&!EncodeTextureEngineExtra(wide)&&!EncodeTextureEngineExtra(mips),
         "extra encoded for something the engine cannot take");
+    Check(EncodeTextureEngineExtra(widest)&&(*EncodeTextureEngineExtra(widest))[3]==B{0xFF}&&
+        (*EncodeTextureEngineExtra(widest))[4]==B{0xFF},"a u16 side was refused");
     // The user's shoulder replacement: 512x1024 BC1 with its full chain.
     const auto shoulder_bytes=Dds(512,1024,false);
     const auto shoulder=*ValidateDds(shoulder_bytes).metadata;
@@ -284,7 +287,7 @@ void TestTextureResize() {
         plan->extra_offset==20&&plan->metadata_size==64&&plan->metadata_sha256==entry.metadata_sha256&&
         plan->replacement_runs.size()==11&&plan->replacement_runs.front()==262144&&
         plan->replacement_runs.back()==shoulder.payload_size&&plan->original_runs.back()==bc1.payload_size&&
-        plan->storage==storage,"shoulder resize plan rejected");
+        plan->storage==storage&&plan->warnings.empty(),"shoulder resize plan rejected");
     const auto rejected=[&](PackageIdentityEntry e,const DdsMetadata& replacement,std::shared_ptr<const ByteStorage> s) {
         std::wstring why;return !PlanTextureResize(e,bc1,std::move(s),replacement,why)&&!why.empty();
     };
@@ -294,23 +297,67 @@ void TestTextureResize() {
     auto size=entry;++size.original_size;
     auto rgba=shoulder;rgba.format=DdsFormat::rgba8;
     auto longer=shoulder_bytes;longer.push_back(B{});
-    auto odd_side=shoulder;odd_side.width=510;
     Check(rejected(other,shoulder,storage)&&rejected(tiny,shoulder,storage)&&rejected(outside,shoulder,storage)&&
-        rejected(size,shoulder,storage)&&rejected(entry,rgba,storage)&&rejected(entry,odd_side,storage)&&
+        rejected(size,shoulder,storage)&&rejected(entry,rgba,storage)&&
         rejected(entry,shoulder,MakeByteStorage(longer).storage)&&
         rejected(entry,bc1,MakeByteStorage(Dds(1024,1024,false)).storage),
         "invalid texture resize plan accepted");
+    // D3D9's documented rules were never seen failing in game: warnings only.
+    const auto odd_bytes=Dds(510,1022,false);const auto odd_side=*ValidateDds(odd_bytes).metadata;
+    const auto odd=PlanTextureResize(entry,bc1,MakeByteStorage(odd_bytes).storage,odd_side,error);
+    Check(odd&&odd->warnings.size()==1&&odd->warnings[0].find(L"multiples of 4")!=std::wstring::npos,
+        "BC sides that are not multiples of 4 were refused");
+    auto huge=shoulder;huge.width=16388;huge.height=4;huge.mip_count=1;huge.payload_size=4097*8;
+    std::vector<std::byte> huge_bytes(128+huge.payload_size);
+    const auto big=PlanTextureResize(entry,bc1,MakeByteStorage(huge_bytes).storage,huge,error);
+    Check(big&&big->warnings.size()==1&&big->warnings[0].find(L"16384")!=std::wstring::npos,
+        "a side over 16384 was refused");
     const auto mode=ParseLoaderConfig("[loader]\ntextures=resize");
     Check(mode.valid&&mode.config.native_textures&&mode.config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=native").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=exact").config.resize_textures&&
         !ParseLoaderConfig("[loader]\ntextures=resize\ntextures=native").valid,"resize texture mode failed");
-    std::cout<<"texture_resize: PASS (engine extra, level sizes, mip trimming, plan, 8 rejections, INI mode)\n";
+    Check(ParseLoaderConfig("[loader]").config.resize_textures,"textures=resize is not the default");
+    // A DX10 header behind the legacy header of its format, payload untouched.
+    auto dx10_bytes=Dds(8,8,false);
+    Put(dx10_bytes,84,0x30315844);
+    dx10_bytes.insert(dx10_bytes.begin()+128,20,B{});
+    Put(dx10_bytes,128,72);Put(dx10_bytes,132,3);Put(dx10_bytes,140,1);
+    const auto dx10_meta=ValidateDds(dx10_bytes);
+    const auto legacy=dx10_meta?LegacyDdsBytes(dx10_bytes,*dx10_meta.metadata):std::nullopt;
+    const auto legacy_meta=legacy?ValidateDds(*legacy):DdsValidationResult{};
+    Check(legacy_meta&&!legacy_meta.metadata->has_dx10_header&&legacy_meta.metadata->format==DdsFormat::bc1&&
+        legacy->size()+20==dx10_bytes.size()&&std::equal(legacy->begin()+128,legacy->end(),dx10_bytes.begin()+148),
+        "DX10 header was not rewritten as a legacy one");
+    // RGBA8 and BGR8 become BGRA8 with their own size and mips.
+    auto rgba_bytes=Dds(2,2,true);
+    Put(rgba_bytes,92,0xFF);Put(rgba_bytes,100,0xFF0000);
+    for(std::size_t at=128;at<rgba_bytes.size();at+=4) {
+        rgba_bytes[at]=B{10};rgba_bytes[at+1]=B{20};rgba_bytes[at+2]=B{30};rgba_bytes[at+3]=B{40};
+    }
+    const auto rgba_meta=*ValidateDds(rgba_bytes).metadata;
+    const auto expanded=ExpandDdsToBgra8(rgba_bytes,rgba_meta);
+    const auto expanded_meta=expanded?ValidateDds(*expanded):DdsValidationResult{};
+    Check(rgba_meta.format==DdsFormat::rgba8&&expanded_meta&&expanded_meta.metadata->format==DdsFormat::bgra8&&
+        expanded_meta.metadata->mip_count==rgba_meta.mip_count&&expanded->size()==rgba_bytes.size()&&
+        (*expanded)[128]==B{30}&&(*expanded)[129]==B{20}&&(*expanded)[130]==B{10}&&(*expanded)[131]==B{40},
+        "RGBA8 was not expanded to BGRA8");
+    std::vector<std::byte> bgr_bytes(rgba_bytes.begin(),rgba_bytes.begin()+128);
+    Put(bgr_bytes,80,0x40);Put(bgr_bytes,88,24);Put(bgr_bytes,92,0xFF0000);Put(bgr_bytes,100,0xFF);Put(bgr_bytes,104,0);
+    for(int i=0;i<5;++i) for(const unsigned c:{1u,2u,3u}) bgr_bytes.push_back(B(c));
+    const auto bgr_meta=ValidateDds(bgr_bytes);
+    const auto bgr=bgr_meta?ExpandDdsToBgra8(bgr_bytes,*bgr_meta.metadata):std::nullopt;
+    Check(bgr_meta&&bgr_meta.metadata->format==DdsFormat::bgr8&&bgr&&bgr->size()==128+5*4&&ValidateDds(*bgr)&&
+        (*bgr)[128]==B{1}&&(*bgr)[129]==B{2}&&(*bgr)[130]==B{3}&&(*bgr)[131]==B{0xFF},
+        "BGR8 was not expanded to BGRA8");
+    Check(!ExpandDdsToBgra8(shoulder_bytes,shoulder),"BC1 was expanded");
+    std::cout<<"texture_resize: PASS (engine extra, level sizes, mip trimming, plan, 7 rejections, 2 warnings, "
+               "resize default, DX10 header, RGBA8/BGR8 to BGRA8, INI mode)\n";
 }
 
 int CheckTextureCatalog(const std::filesystem::path& game,const std::filesystem::path& mods,const std::filesystem::path& output,bool resize) {
     using namespace ds2::modding;
-    ModIndexOptions o;o.dds_only=true;o.include_png=true;o.max_asset_file_size=64ull*1024*1024;o.max_total_bytes=256ull*1024*1024;
+    ModIndexOptions o;o.dds_only=true;o.include_png=true; // no byte budgets, as the loader
     const auto index=BuildModIndex(mods,o);Check(index&&index.issues.empty(),"texture mod index rejected files");
     std::vector<CanonicalVirtualPath> paths;for(const auto& a:index.snapshot->Assets()) paths.push_back(a.virtual_path);
     Check(!paths.empty(),"texture catalog is empty");

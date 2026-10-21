@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -62,10 +63,11 @@ struct ModIndexOptions final {
     bool include_native_models{false};
     bool include_png{false};
     bool include_animations{false};
-    std::uint64_t max_asset_file_size{128ull * 1024ull * 1024ull};
-    std::uint64_t max_total_bytes{1024ull * 1024ull * 1024ull};
-    std::size_t max_asset_count{16'384};
-    std::size_t max_entry_count{100'000};
+    // No size or count budget by default (RESTRICCIONES.md); tests set them.
+    std::uint64_t max_asset_file_size{(std::numeric_limits<std::uint64_t>::max)()};
+    std::uint64_t max_total_bytes{(std::numeric_limits<std::uint64_t>::max)()};
+    std::size_t max_asset_count{(std::numeric_limits<std::size_t>::max)()};
+    std::size_t max_entry_count{(std::numeric_limits<std::size_t>::max)()};
     std::size_t max_issue_count{1'024};
     std::size_t max_depth{32};
 };
