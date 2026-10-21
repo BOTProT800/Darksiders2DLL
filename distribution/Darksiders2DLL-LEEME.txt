@@ -1,0 +1,130 @@
+﻿Darksiders2DLL 0.11.0
+Cargador de mods para Darksiders II Deathinitive Edition (Windows, 64 bits)
+English below.
+
+Carga texturas (DDS y PNG) y modelos (.2) desde la carpeta "mods" sin modificar
+los archivos del juego. Hecho para la versión de Steam: con otra versión, el
+juego arranca con normalidad pero no carga los mods.
+
+INSTALAR
+1. Cierra el juego.
+2. Abre la carpeta del juego. En Steam: Biblioteca > clic derecho en
+   Darksiders II Deathinitive Edition > Administrar > Ver archivos locales.
+   Es la carpeta donde está Darksiders2.exe.
+3. Copia TODO el contenido de este ZIP en esa carpeta (dinput8.dll tiene que
+   quedar al lado de Darksiders2.exe). Si Windows pide permiso de
+   administrador para copiar, acéptalo.
+4. Abre el juego como siempre.
+
+No hace falta tocar Darksiders2DLL.ini: las opciones vienen explicadas dentro.
+
+AÑADIR MODS
+Cada mod va en su propia carpeta dentro de "mods", y dentro de ella la carpeta
+"media" con la misma ruta que el archivo original del juego:
+
+   mods\nombre_del_mod\media\...
+
+Ejemplo:
+   mods\hombrera_hd\media\items\armor\DS1A01_Shoulder_Diff.dds
+
+- El nombre de la carpeta del mod es libre.
+- Una textura en PNG lleva el nombre del DDS original terminado en .png
+  (DS1A01_Shoulder_Diff.png o DS1A01_Shoulder_Diff.dds.png).
+- Si dos mods cambian el mismo archivo, gana la carpeta que va primero en orden
+  alfabético: ponles 010_, 020_... delante para elegir.
+- Para quitar un mod, saca su carpeta de "mods".
+- Los cambios se aplican al abrir el juego.
+
+ACTUALIZAR
+Copia el contenido del ZIP nuevo encima y elige "Reemplazar". Si cambiaste
+Darksiders2DLL.ini y quieres conservar tus cambios, omite ese archivo.
+
+DESINSTALAR
+Borra dinput8.dll de la carpeta del juego. Si quieres, borra también
+Darksiders2DLL.ini, Darksiders2DLL-LEEME.txt, la carpeta Darksiders2DLL-info y
+la carpeta mods. Los archivos del juego nunca se modifican.
+
+NO ES COMPATIBLE CON EL "DLL LOADER" DE LOKI
+Este cargador y "DLL Loader for Darksiders 2" de LOKI (lo usan mods como
+Custom FOV o DS2LM) necesitan el mismo archivo, dinput8.dll: solo puede haber
+uno. Si al copiar Windows pregunta si reemplazar dinput8.dll, es que ya tienes
+otro. Si quieres volver a él más adelante, guarda antes una copia de ese
+dinput8.dll fuera de la carpeta del juego.
+
+SI UN MOD NO SE VE
+- Revisa la ruta: mods\<mod>\media\... igual que el archivo original del juego.
+- Texturas DDS: BGRA8, DXT1, DXT3 o DXT5, sin cabecera DX10. O usa PNG.
+- Los modelos (.2) son experimentales. Si un mod de modelos rompe el juego,
+  sácalo de "mods" o, en Darksiders2DLL.ini, quita el ; de la línea ;models=off
+- Las animaciones (.anm) todavía no se cargan.
+- Cada partida deja un registro en %LOCALAPPDATA%\Darksiders2DLL\logs (pega esa
+  ruta en la barra de direcciones del Explorador de archivos). El más reciente
+  dice qué se cargó, qué se rechazó y por qué. Adjúntalo si pides ayuda.
+
+Licencias y créditos: carpeta Darksiders2DLL-info.
+
+------------------------------------------------------------------------------
+
+Darksiders2DLL 0.11.0
+Mod loader for Darksiders II Deathinitive Edition (Windows, 64-bit)
+
+Loads textures (DDS and PNG) and models (.2) from the "mods" folder without
+changing the game files. Made for the Steam version: with another version the
+game starts normally but loads no mods.
+
+INSTALL
+1. Close the game.
+2. Open the game folder. In Steam: Library > right-click Darksiders II
+   Deathinitive Edition > Manage > Browse local files. It is the folder that
+   contains Darksiders2.exe.
+3. Copy EVERYTHING in this ZIP into that folder (dinput8.dll must end up next
+   to Darksiders2.exe). If Windows asks for administrator permission to copy,
+   allow it.
+4. Start the game as usual.
+
+You do not need to edit Darksiders2DLL.ini: the options are explained inside.
+
+ADD MODS
+Each mod goes in its own folder inside "mods", holding a "media" folder with
+the same path as the original game file:
+
+   mods\mod_name\media\...
+
+Example:
+   mods\hd_shoulder\media\items\armor\DS1A01_Shoulder_Diff.dds
+
+- The mod folder name is up to you.
+- A PNG texture uses the original DDS name ending in .png
+  (DS1A01_Shoulder_Diff.png or DS1A01_Shoulder_Diff.dds.png).
+- If two mods change the same file, the folder that comes first
+  alphabetically wins: prefix them with 010_, 020_... to choose.
+- To remove a mod, move its folder out of "mods".
+- Changes apply when the game starts.
+
+UPDATE
+Copy the new ZIP's contents over the old ones and choose "Replace". If you
+changed Darksiders2DLL.ini and want to keep your changes, skip that file.
+
+UNINSTALL
+Delete dinput8.dll from the game folder. Optionally also delete
+Darksiders2DLL.ini, Darksiders2DLL-LEEME.txt, the Darksiders2DLL-info folder
+and the mods folder. The game files are never changed.
+
+NOT COMPATIBLE WITH LOKI'S "DLL LOADER"
+This loader and LOKI's "DLL Loader for Darksiders 2" (used by mods such as
+Custom FOV or DS2LM) need the same file, dinput8.dll: only one can be
+installed. If Windows asks whether to replace dinput8.dll while copying, you
+already have another one. To go back to it later, first save a copy of that
+dinput8.dll outside the game folder.
+
+IF A MOD DOES NOT SHOW UP
+- Check the path: mods\<mod>\media\... matching the original game file.
+- DDS textures: BGRA8, DXT1, DXT3 or DXT5, without a DX10 header. Or use PNG.
+- Models (.2) are experimental. If a model mod breaks the game, move it out
+  of "mods" or, in Darksiders2DLL.ini, remove the ; from the line ;models=off
+- Animations (.anm) are not loaded yet.
+- Every session writes a log to %LOCALAPPDATA%\Darksiders2DLL\logs (paste that
+  path into the File Explorer address bar). The newest one says what was
+  loaded, what was rejected and why. Attach it when asking for help.
+
+Licenses and credits: Darksiders2DLL-info folder.

@@ -4,7 +4,9 @@ param(
     [Parameter(Mandatory=$true)][string]$GameDirectory,
     [ValidateSet('Install','Uninstall','Verify')][string]$Action = 'Install',
     # Required to replace an existing proxy. Obtain from Get-FileHash yourself.
-    [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ReplaceSha256
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ReplaceSha256,
+    # Folder of the extracted Release ZIP; defaults to this script's folder.
+    [string]$PackageDirectory = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -90,7 +92,8 @@ function Write-New([string]$Path, [byte[]]$Bytes) {
 }
 try {
     $game = Pin-Directory $GameDirectory
-    $package = Pin-Directory $PSScriptRoot
+    if (!$PackageDirectory) { $PackageDirectory = $PSScriptRoot }
+    $package = Pin-Directory $PackageDirectory
     if ($game.TrimEnd('\') -eq $package.TrimEnd('\')) { throw 'Extrae el paquete fuera de la carpeta del juego.' }
     $exe = Join-Path $game 'Darksiders2.exe'
     Assert-PlainFile $exe
@@ -104,9 +107,10 @@ try {
     $backup = Join-Path $game 'dinput8.dll.ds2-backup'
     $statePath = Join-Path $game 'Darksiders2DLL.install.json'
     $config = Join-Path $game 'Darksiders2DLL.ini'
-    $manifestBytes = Read-LockedBytes (Join-Path $package 'manifest.json') 16384
+    $manifestBytes = Read-LockedBytes (Join-Path $package 'Darksiders2DLL-info\manifest.json') 16384
     $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
-    if ($manifest.version -ne '0.4.0' -or $manifest.dllSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+    # package_release.ps1 only writes manifests for plain Release versions.
+    if ($manifest.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $manifest.dllSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
         $manifest.configSha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'Manifiesto invalido.' }
     $newDll = Read-LockedBytes (Join-Path $package 'dinput8.dll') (16 * 1024 * 1024)
     $newConfig = Read-LockedBytes (Join-Path $package 'Darksiders2DLL.ini') 16384
@@ -122,7 +126,7 @@ try {
         $stateBytes = Read-LockedBytes $statePath 16384
         $stateHandle = $held[$held.Count - 1]
         $state = [Text.Encoding]::UTF8.GetString($stateBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
-        if ($state.version -ne '0.4.0' -or $state.dllSha256 -ne $manifest.dllSha256 -or
+        if ($state.version -ne $manifest.version -or $state.dllSha256 -ne $manifest.dllSha256 -or
             (Hash-File $dll) -ne $manifest.dllSha256) { throw 'Estado o DLL diferente: se conserva todo para revision manual.' }
         if ($state.backupSha256) {
             if ($state.backupSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
@@ -162,7 +166,7 @@ try {
         } else { [IO.File]::Move($stage, $dll) }
         $installed = $true
         if ((Hash-File $dll) -ne $manifest.dllSha256) { throw 'Fallo la verificacion posterior.' }
-        $state = @{ version='0.4.0'; dllSha256=$manifest.dllSha256; backupSha256=$oldHash }
+        $state = @{ version=$manifest.version; dllSha256=$manifest.dllSha256; backupSha256=$oldHash }
         Write-New $statePath ([Text.Encoding]::UTF8.GetBytes(($state | ConvertTo-Json)))
     } catch {
         if ($installed) {
@@ -174,7 +178,7 @@ try {
     } finally {
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage }
     }
-    Write-Output 'Instalado y verificado. Configura mods y abre el juego normalmente. Consulta INSTALACION.md.'
+    Write-Output 'Instalado y verificado. Copia tus mods en la carpeta mods y abre el juego normalmente. Consulta INSTALACION.md.'
 } finally {
     foreach ($handle in $held) { $handle.Dispose() }
 }

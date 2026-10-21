@@ -108,6 +108,9 @@ if (!$text.Contains('GENERAL_DDS_OVERRIDE_HIT')) { throw 'Falta el cargador gene
 $checks.Add('release:PE-hardening-and-no-special-case')
 $sources = @(Get-ChildItem -LiteralPath $root -File | Where-Object Extension -In @('.cpp','.h','.vcxproj','.def','.json'))
 $sources += @(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -File | Where-Object Extension -In @('.cpp','.h','.asm'))
+# Everything package_release.ps1 copies next to the DLL: it refuses files edited after this PASS.
+$sources += @(Get-Item -LiteralPath @('distribution\Darksiders2DLL.ini','distribution\Darksiders2DLL-LEEME.txt',
+    'distribution\mods\LEEME.txt','CREDITS.md','THIRD_PARTY_NOTICES.md','LICENSE' | ForEach-Object { Join-Path $root $_ }))
 $sourceHashes = @($sources | Sort-Object FullName | ForEach-Object {
     @{path=$_.FullName.Substring($root.Length+1).Replace('\','/'); sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}
 })

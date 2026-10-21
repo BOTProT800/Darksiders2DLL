@@ -1,6 +1,13 @@
 # Darksiders2DLL
 
-**Código actual: 0.11.0-texture-resize-trial.** Con `textures=resize`, una
+**Release 0.11.0.** Paquete pensado para jugadores: la raíz del ZIP reproduce
+la carpeta del juego y se instala copiándolo todo junto a `Darksiders2.exe`,
+sin scripts; desinstalar es borrar `dinput8.dll`. Funciona sin tocar el INI:
+por defecto `textures=resize` y `models=override_unchecked`, la combinación con
+la que se confirmaron en el juego la 0.10.0 y la 0.11.0
+([guía técnica](distribution/INSTALACION.md)).
+
+**0.11.0-texture-resize-trial.** Con `textures=resize`, una
 textura DDS o PNG de otro tamaño, formato o número de mips (por ejemplo
 512×1024 o 2048² en lugar de un original de 1024²) llega al motor tal cual, sin
 convertirla al contrato original: la DLL reescribe en memoria su `extra` de
@@ -69,8 +76,6 @@ siguen desactivados por defecto en el paquete. [Guía de la prueba](distribution
 [contrato técnico](research/MODEL_TRIAL.md).
 La instalación de prueba usa `models=override_shape`; conserva el respaldo de
 **0.4.1-diagnostic** y también verificó el reemplazo de la máscara DDS.
-Las instrucciones del ZIP 0.4.0 que siguen describen el paquete anterior.
-
 **Fallo confirmado en 0.4.0:** algunas texturas válidas, incluida la máscara de
 Death, no se sustituyen porque el contador de lecturas se usaba como índice de
 archivo. La corrección `0.4.1-diagnostic` usa el índice real del juego: la máscara
@@ -103,11 +108,15 @@ está en [CREDITS.md](CREDITS.md).
 
 ## Instalar y configurar
 
-El paquete se genera en `build/dist/Darksiders2DLL-0.4.0-win64.zip` e incluye la
-DLL, un INI, instalador/desinstalador, huellas, evidencia y avisos de terceros.
-No incluye DDS, archivos del juego ni dependencias dinámicas adicionales.
+El paquete se genera en `build/dist/Darksiders2DLL-VERSION-win64.zip`. Su raíz
+reproduce la carpeta del juego: `dinput8.dll`, `Darksiders2DLL.ini` (opciones
+comentadas), `Darksiders2DLL-LEEME.txt` (guía para jugadores, en español e
+inglés), `mods/LEEME.txt` y `Darksiders2DLL-info/` con créditos, licencias,
+evidencia y huellas. No incluye texturas, archivos del juego ni dependencias
+dinámicas adicionales. `distribution/Install.ps1` queda en el repositorio como
+instalación avanzada.
 
-- [Guía de instalación, mods, configuración y desinstalación](distribution/INSTALACION.md)
+- [Guía técnica: paquete, instalación avanzada, mods, configuración y registros](distribution/INSTALACION.md)
 - [Revisión de seguridad y riesgos residuales](distribution/SEGURIDAD.md)
 - [Créditos](CREDITS.md) y [licencias de terceros](THIRD_PARTY_NOTICES.md)
 
@@ -118,17 +127,16 @@ cargador y `mode=observe` permite diagnosticar sin escribir buffers.
 
 ## Alcance del Release
 
-Este es un **Release preliminar**. El motor general v6 anterior se comprobó en
-el juego con dos DDS y confirmación visual. Las nuevas protecciones y el INI
-se verifican mediante pruebas automatizadas; este binario todavía necesita su
-propia sesión visual antes de sustituir definitivamente la copia estable.
-Preparar el paquete no lo despliega ni inicia el juego.
+La 0.11.0 empaqueta rutas confirmadas en el juego: texturas a su propio tamaño
+(hombrera `ds1a01_shoulder`, 0.11.0) y mallas más grandes que el original
+(`death_head.2`, 0.10.0), con la configuración que ahora es la predeterminada.
+El binario de Release, que solo cambia esos valores por defecto y la versión,
+no ha tenido su propia sesión en el juego (`inGameValidated=false` en
+`VALIDACION.json`). Preparar el paquete no lo despliega ni inicia el juego.
 
-Se admiten DDS con el mismo contrato del original en segmentos OBPK con nombres
-y flujo único de `media.upak`. Se rechazan layouts por bloques, DDS DX10,
-lecturas parciales, rutas inseguras y diferencias de contrato/hash. No se
-cubren modelos, audio, materiales ni scripts. La guía explica los límites de
-memoria y el posible retraso con catálogos grandes.
+Se sustituyen texturas DDS y PNG y modelos `.2`; las animaciones solo se
+observan, y no se cubren audio, materiales ni scripts. La guía técnica detalla
+formatos, límites de memoria y el posible retraso con catálogos grandes.
 
 La escritura solo se habilita cuando todos los hooks están activos. Una
 escritura fallida, parcial o no verificada bloquea nuevos intentos hasta
@@ -145,20 +153,23 @@ integración de vcpkg para MSBuild en tu equipo y restaura el manifiesto.
 Desde PowerShell con ejecución permitida para estos scripts revisados:
 
 ```powershell
-.\scripts\verify_release.ps1
-.\tests\install_tests.ps1 `
-  -GameExecutable 'RUTA_DEL_JUEGO\Darksiders2.exe' `
-  -DllPath .\build\validation-release-0.4\release-a\out\dinput8.dll
+.\scripts\verify_release.ps1 -EvidenceName validation-release-0.11.0
 .\scripts\package_release.ps1 `
-  -DllPath .\build\validation-release-0.4\release-a\out\dinput8.dll `
-  -ValidationPath .\build\validation-release-0.4\VALIDACION.json `
-  -InstallerValidationPath 'CARPETA_DE_ENSAYO\installer-validation.json'
+  -DllPath .\build\validation-release-0.11.0\release-a\out\dinput8.dll `
+  -ValidationPath .\build\validation-release-0.11.0\VALIDACION.json
+Expand-Archive .\build\dist\Darksiders2DLL-0.11.0-win64.zip .\build\dist\extraido
+.\tests\install_tests.ps1 `
+  -GameExecutable 'COPIA_LOCAL\Darksiders2.exe' `
+  -DllPath .\build\validation-release-0.11.0\release-a\out\dinput8.dll `
+  -PackageDirectory .\build\dist\extraido
 ```
 
 `verify_release.ps1` acepta `-MSBuild` para otra ubicación de Visual Studio y,
 opcionalmente, `-GameDirectory` y `-AssetSource` para comprobaciones adicionales
 de lectura sobre la instalación y el DDS de regresión. No despliega ni lanza el
-juego. Produce builds independientes y evidencia en `build/validation-release-0.4`.
+juego. Produce builds independientes y evidencia en `build/` con el nombre de
+`-EvidenceName`. `VALIDACION.json` registra la versión de `bootstrap.cpp` y los
+hashes de las fuentes y de los archivos que el paquete copia junto a la DLL.
 Tras un PASS borra los intermedios de compilación (`obj\` y `.ilk`) y conserva
 los binarios de `out\`, los logs y `VALIDACION.json`.
 
@@ -170,22 +181,17 @@ Los switches `EnableResourceIdentityProbe`, `EnableGeneralResolverPrototype` y
 `EnableGeneralResolverWritePrototype` fueron retirados: activarlos genera error.
 La configuración de observación/escritura ahora es el INI de ambas compilaciones.
 
-El instalador se prueba sobre una copia local del ejecutable, sin tocar el juego:
+`install_tests.ps1` prueba `Install.ps1` sobre una copia local del ejecutable,
+sin tocar el juego: lo ejecuta desde una carpeta aparte contra el ZIP extraído
+(`-PackageDirectory`) o, sin ese parámetro, contra un paquete que monta con la
+DLL indicada y la versión de `bootstrap.cpp`. La salida indica la carpeta de
+ensayo con `installer-validation.json`.
 
-```powershell
-.\tests\install_tests.ps1 `
-  -GameExecutable 'RUTA_DEL_JUEGO\Darksiders2.exe' `
-  -DllPath .\build\validation-release-0.4\release-a\out\dinput8.dll
-```
-
-La salida indica la carpeta de ensayo que contiene `installer-validation.json`;
-úsala al empaquetar. El empaquetador también exige una prueba del instalador
-con esa DLL y comprueba que el script no haya cambiado.
-
-El empaquetador verifica la huella de la DLL y las fuentes contra la evidencia.
-El ZIP tiene una lista cerrada de archivos; PDB, ejecutables, DDS y fixtures no
-se distribuyen. El ZIP y sus hashes no llevan firma digital y no prueban por sí
-solos la identidad de quien los publica.
+El empaquetador solo acepta versiones de Release (`X.Y.Z`, sin sufijos de
+prueba o diagnóstico) y verifica la huella de la DLL, las fuentes y los archivos
+del paquete contra la evidencia. El ZIP tiene una lista cerrada de archivos;
+PDB, ejecutables, DDS y fixtures no se distribuyen. El ZIP y sus hashes no
+llevan firma digital y no prueban por sí solos la identidad de quien los publica.
 
 ## Créditos
 
@@ -197,7 +203,7 @@ investigación previa de la comunidad que esos proyectos reconocen.
 
 Las aportaciones y fuentes están detalladas en [CREDITS.md](CREDITS.md), y los
 avisos de licencia en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-El empaquetador incluye ambos archivos en el ZIP.
+El empaquetador incluye ambos archivos en `Darksiders2DLL-info/` del ZIP.
 
 ## Historial
 

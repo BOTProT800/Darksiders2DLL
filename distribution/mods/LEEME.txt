@@ -1,0 +1,21 @@
+﻿Pon aquí tus mods, cada uno en su propia carpeta, con la carpeta "media" del
+mod dentro:
+
+   mods\nombre_del_mod\media\...
+
+Ejemplo: mods\hombrera_hd\media\items\armor\DS1A01_Shoulder_Diff.dds
+
+Este archivo no es un mod y se puede borrar. Más ayuda en
+Darksiders2DLL-LEEME.txt, en la carpeta del juego.
+
+------------------------------------------------------------------------------
+
+Put your mods here, each one in its own folder holding the mod's "media"
+folder:
+
+   mods\mod_name\media\...
+
+Example: mods\hd_shoulder\media\items\armor\DS1A01_Shoulder_Diff.dds
+
+This file is not a mod and can be deleted. More help in
+Darksiders2DLL-LEEME.txt, in the game folder.
