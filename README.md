@@ -8,7 +8,10 @@ retira las que eran predicciones: `textures=resize` y
 RGBA8 y BGR8 llegan a su tamaño; los lados BC no múltiplos de 4 y los de más de
 16384 solo dejan un aviso `resize_warning` en el log; se quitan los
 presupuestos de 64 MiB por archivo y 256 MiB en total y los topes fijos del
-lector de `.2`. Pendiente de probar en el juego.
+lector de `.2`. Confirmado en el juego el 20 de octubre (C-08): los valores por
+defecto, un DDS RGBA8 de 4096² y 85 MiB a su tamaño con los colores correctos,
+un DDS con cabecera DX10 y la máscara redimensionada. Falta probar los lados BC
+no múltiplos de 4 (sesión B).
 
 **0.11.0-texture-resize-trial.** Con `textures=resize`, una
 textura DDS o PNG de otro tamaño, formato o número de mips (por ejemplo

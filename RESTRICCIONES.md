@@ -1,6 +1,7 @@
 # Restricciones: solo las que fallaron en el juego
 
-Estado al 20 de octubre de 2026 (código 0.12.0-tested-limits-trial).
+Estado al 20 de octubre de 2026 (código 0.12.0-tested-limits-trial; sesión A de
+su prueba confirmada en el juego, C-08).
 
 ## La regla
 
@@ -64,6 +65,7 @@ Lo que el juego ya aceptó. Ninguna regla puede volver a prohibirlo sin un F-xx.
 | C-05 | 0.9.2 | DDS de 512×1024 convertidos al contrato original de 1024² |
 | C-06 | 0.10.0 | `.2` mayor que el original (máscara de 432 a 864 vértices), a su tamaño |
 | C-07 | 0.11.0 | DDS de otro tamaño, formato y mips (512×1024 BC1 de 11 niveles y BC3 de 1 nivel) a su tamaño |
+| C-08 | 0.12.0 | Sesión A de la [prueba de 0.12.0](#prueba-en-el-juego-de-0120): valores por defecto `textures=resize` y `models=override_unchecked` sin esas líneas en el INI; un DDS RGBA8 de 4096² con 13 mips (85 MiB, por encima del antiguo presupuesto de 64 MiB) entregado a su tamaño como BGRA8 con los colores correctos; un DDS con cabecera DX10 (BC3 512×1024); la máscara `death_head.2` redimensionada en el mismo proceso |
 
 ## Retirado en 0.12.0
 
@@ -74,18 +76,18 @@ predecía y qué buscar en el log si un mod falla.
 
 | Antes | Ahora | Predicción sin probar |
 |---|---|---|
-| `textures=native` por defecto: en D3D9, toda textura distinta se reescalaba al original | `textures=resize` por defecto; `native` sigue disponible | — |
+| `textures=native` por defecto: en D3D9, toda textura distinta se reescalaba al original | `textures=resize` por defecto; `native` sigue disponible. Confirmado (C-08) | — |
 | Lados BC no múltiplos de 4: rechazo | Se entrega con `resize_warning="untested: D3D9 documents BC sides as multiples of 4"` | `CreateTexture` falla y el motor se cierra (`0x75A9B3`) |
 | Lados de más de 16384: rechazo | Hasta 65535, el máximo del campo u16 del `extra`; por encima de 16384, aviso | El dispositivo no crea la textura |
-| DDS con cabecera DX10: rechazo | Se reescribe con la cabecera clásica de su formato | — |
-| RGBA8 y BGR8: reescalados al original | Se entregan a su tamaño como BGRA8 (sin pérdida) | — |
+| DDS con cabecera DX10: rechazo | Se reescribe con la cabecera clásica de su formato. Confirmado con BC3 (C-08) | — |
+| RGBA8 y BGR8: reescalados al original | Se entregan a su tamaño como BGRA8 (sin pérdida). Confirmado con RGBA8 (C-08); BGR8 sin probar | — |
 | `max_dimension` de 32768 en la validación DDS | 65535 | — |
 
 **Mallas**
 
 | Antes | Ahora | Predicción sin probar |
 |---|---|---|
-| `models=off` por defecto | `models=override_unchecked` por defecto | — |
+| `models=off` por defecto | `models=override_unchecked` por defecto. Confirmado (C-08) | — |
 | `override_positions` y `override_shape` con reglas de contenido (posiciones dentro de la caja, UV, pesos y huesos inmutables, bases ortonormales…) | Alias de `override_unchecked`; las reglas quedan solo en las comprobaciones offline | — |
 | Topes de 64 MiB por `.2`, 256 mallas, 1.000.000 por recuento y por vértices, 256 huesos, 4096 materiales y 4096 bytes por nombre | Solo los límites del archivo: cada recuento cabe en el archivo y las lecturas del motor son de 31 bits | — |
 | Cajas y matrices de huesos finitas, cajas no invertidas, nombres no vacíos | Sin regla | — |
@@ -95,10 +97,12 @@ predecía y qué buscar en el log si un mod falla.
 
 | Antes | Ahora |
 |---|---|
-| 64 MiB por archivo y 256 MiB en total (índice de mods, originales de texturas y de mallas). Un PNG de 4096² con mips ya los superaba, y pasarse del total desactivaba **todo** el cargador | Sin presupuesto. Si un archivo no cabe en memoria, solo ese archivo se descarta (`MOD_INDEX_ISSUE`) |
+| 64 MiB por archivo y 256 MiB en total (índice de mods, originales de texturas y de mallas). Un PNG de 4096² con mips ya los superaba, y pasarse del total desactivaba **todo** el cargador | Sin presupuesto. Si un archivo no cabe en memoria, solo ese archivo se descarta (`MOD_INDEX_ISSUE`). Confirmado con un DDS de 85 MiB (C-08) |
 | 16.384 archivos de mods, 100.000 entradas y 16.384 miembros por lectura del paquete | Sin tope |
 
-## Prueba pendiente en el juego: 0.12.0
+## Prueba en el juego de 0.12.0
+
+**Sesión A: confirmada el 20 de octubre (C-08). Sesión B: pendiente.**
 
 Dos sesiones, para que un cierre del juego tenga una sola explicación posible.
 `scripts/install_tested_limits_trial.ps1` instala la DLL validada, quita
@@ -125,6 +129,29 @@ En pantalla, la hombrera de la sesión A es un tablero **azul y amarillo**:
 rojo y cian querría decir que el cambio de RGBA8 a BGRA8 está mal. La de la
 sesión B es **verde y magenta**. El resultado de cada sesión se anota aquí como
 C-xx o F-xx.
+
+**Resultado de la sesión A.** Instalada con `scripts/install_tested_limits_trial.ps1`
+sobre la 0.11.0 (respaldo en `build/tested-limits-trial/installation-backup-a`):
+DLL `655C8DEE…074C` y un INI con solo `enabled`, `mode` y `animations=observe`.
+La sesión `Darksiders2DLL-20261021-030644-15684-000.log` (hora UTC) registró:
+
+- `LOADER_CONFIG mode=override textures=resize` y
+  `MODEL_MODE override_unchecked`, sin esas líneas en el INI.
+- Candidato del Diff con `source=4096x4096/RGBA8/mips=13`,
+  `resize=4096x4096/BGRA8/mips=13` y `resize_bytes=89478612`; el del Spec con
+  cabecera DX10, como `512x1024/BC3/DXT5/mips=1`. Ningún `MOD_INDEX_ISSUE` ni
+  `resize_warning`.
+- `TEXTURE_RESIZE_METADATA_PATCHED` 4 veces por cada uno de los tres miembros y
+  `TEXTURE_RESIZE_COMPLETE` con `delivered=89478612`, `524416` y `349672`, una
+  operación cada uno: el Diff llegó entero en una sola lectura
+  (`first_request=89478484`).
+- `MODEL_RESIZE_COMPLETE delivered=193097 operations=25` para la máscara.
+- Estadísticas: 12 parches de metadatos, 3 texturas entregadas, 0 rechazos,
+  0 fallos y 0 eventos perdidos; `general_write_attempts=0` (la conversión al
+  original no se usó).
+
+El usuario confirmó la hombrera con el tablero azul y amarillo: el paso de RGBA8
+a BGRA8 es correcto.
 
 ## Lo que se mantiene, y por qué
 
