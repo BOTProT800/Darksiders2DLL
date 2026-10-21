@@ -5,6 +5,7 @@ Investigación estática del 18 de octubre de 2026 sobre `Darksiders2.exe`
 Se usaron DUMPBIN, `.pdata`, RTTI, el `media.upak` instalado y la extracción
 local, siempre en modo lectura. Implementado en 0.10.0-resize-trial (sección
 «Implementación») y **confirmado en el juego el 18 de octubre** (sección «Juego»).
+El 19 de octubre se revisó la ruta D3D9, la que usa el juego (sección «Ruta D3D9»).
 
 ## Respuesta corta
 
@@ -49,8 +50,9 @@ tamaños (o desplazamientos de bloque) están en ese bloque.
 
 Por cada archivo, el motor lee del stream de metadatos el tamaño y `extra_size`,
 abre un substream de `extra_size` bytes (`0xF9894`) y llama al manejador del tipo
-(`vtable+0x38`). Para mallas es `gfc::MeshResourceArray` (vtable `0x136EF70`,
-RTTI), método 10 `0x10867AC`, que registra los búferes `{destino, tamaño}`:
+(`vtable+0x38`) de la caché de mallas (`dcm`). Con D3D9, el renderer por defecto,
+es `0x75908C`; con `-dx11`, `0x10867AC` de `gfc::dx11MeshCache` (véase «Ruta
+D3D9»). Ambos registran los mismos búferes `{destino, tamaño}`:
 
 | Parte | Búferes |
 |---|---|
@@ -94,9 +96,75 @@ Marcos de pila de las dos rutas, con `R` = ranura de retorno del detour:
 
 ### Fase 2
 
-`MeshResourceArray` método 9 (`0x1086174`) analiza la cabecera del búfer 0
-(tablas de índices, vértices y pares) y crea los recursos. La cabecera entregada
-debe coincidir con el `extra` parcheado; ambos se derivan del mismo `.2`.
+Al terminar la lectura, `0x9FAF84` llama a la ranura `+0x48` de la caché
+(`0x759B74` en D3D9, `0x1087210` en DX11), que envuelve el búfer 0 en un stream de
+memoria (`0x104F00`) y analiza la cabecera (`0x777D7C` en D3D9) para crear las
+mallas. Si la carga se descarta, llama a `+0x40` (`0x759A5C`, `0x1085F34`), que lo
+libera todo. La cabecera entregada debe coincidir con el `extra` parcheado; ambos
+se derivan del mismo `.2`.
+
+## Ruta D3D9 (`0x75908C`): revisión del 19 de octubre
+
+Revisión estática del mismo ejecutable, en modo lectura, tras descubrir en la
+0.11.0 que el juego usa D3D9 salvo con `-dx11`.
+
+**Corrección de la atribución.** La vtable de `gfc::MeshResourceArray`
+(`0x136EF70`) solo tiene dos ranuras (`0x7588B0`, `0x9ABD0`): en `0x136EF80`
+empieza el localizador RTTI de `gfc::dx11MeshCache` (vtable `0x136EF88`). Los
+antiguos «métodos 9 y 10» eran las ranuras `+0x30` y `+0x38` de `dx11MeshCache`,
+que solo se crea con `-dx11` (`0x746294`: renderer 2 → constructor `0x1085C2C`;
+si no → `0x758970`, vtable `0x15DD948`, sin RTTI). Ambos constructores registran
+el tipo `"dcm"` (`0x15DD8EC`). `MeshResourceArray` es la base del objeto que se
+crea por archivo: `gfc::dx11MeshResourceArray` (`0x136F008`) en DX11 y uno sin RTTI
+(`0x15DD9C0`) en D3D9.
+
+| Ranura | D3D9 (`0x15DD948`) | DX11 (`0x136EF88`) | Función |
+|---|---|---|---|
+| `+0x30` | `0x758A60` | `0x1086174` | generador del `extra` (empaquetador) |
+| `+0x38` | `0x75908C` | `0x10867AC` | fase 0: lista de búferes |
+| `+0x40` | `0x759A5C` | `0x1085F34` | descarte de la carga |
+| `+0x48` | `0x759B74` | `0x1087210` | fase 2: análisis de la cabecera |
+
+**La lista de búferes coincide.** `0x75908C` lee el `extra` igual que
+`0x10867AC` (el par solo si `i < pares`; si no, 0) y registra los mismos búferes,
+en el mismo orden y con los mismos tamaños, enmascarados a 31 bits. La tabla de la
+fase 0 y `ModelEngineBuffers` valen para los dos renderers. A diferencia de las
+texturas D3D9, no une búferes contiguos. Esto encaja con los 25 búferes exactos
+que se observaron en el juego.
+
+**Cambian los destinos.** Como con las texturas, D3D9 crea los recursos ya en la
+fase 0, del tamaño que indica el `extra`, y registra punteros bloqueados:
+
+| Búfer | Destino en D3D9 |
+|---|---|
+| Cabecera, `par×16` y, con piel, `×52`, `×16`, `×4` | memoria del motor (`0xC2D00`) |
+| `{nulo, 8}` | nulo: se salta |
+| Índices, `ic×2` | `CreateIndexBuffer` en `D3DFMT_INDEX16` (`0x75BCBC`), bloqueado en `0x75BD78` |
+| Vértices: `vc×20` con piel; en estáticas, todos salvo `par×16` | búfer de vértices (`0x75B450`), bloqueado por flujo (`vtable+0x68`) |
+
+El tipo de vértice sale del par: 7 (par > 0 o −1), 5 (−2), 10 (−3), 3 (−4),
+0 (otro) y 15 (con piel). Consecuencias:
+
+- El parche del `extra` es imprescindible: sin él, los búferes D3D9 tendrían el
+  tamaño original. La ruta de la 0.10.0 ya lo exige.
+- `0x75BCBC` devuelve si `CreateIndexBuffer` funcionó, pero `0x75908C` lo ignora:
+  si fallara, el bloqueo usaría un puntero nulo. Es un riesgo para mallas mucho
+  mayores, igual que con las texturas.
+- `D3DFMT_INDEX16` confirma el límite de 65.535 vértices por malla.
+
+**Generador del `extra` (`0x758A60`, igual que `0x1086174`).** No es la fase 2:
+lee la cabecera del `.2` del stream `+0x38` y escribe el `extra` en `+0x40`. El
+resultado coincide con `EncodeModelEngineExtra`, pero la tabla de pares se lee
+distinto que en `ReadModelEngineCounts`: si el recuento es negativo, cada entrada
+mide 8 bytes (entero y flotante); si es positivo, 4. La DLL siempre toma el valor
+absoluto y salta 4 bytes tras cada par. `death_head.2` guarda −4. Con un recuento
+positivo, la DLL leería mal los pares y, salvo coincidencia, rechazaría la malla
+al compararla con el `extra` del paquete o al comprobar tamaño y cabecera: no la
+entregaría mal.
+
+**Resuelto el 19 de octubre:** los 7608 `.2` extraídos guardan el recuento
+negativo (|n| = mallas) y ninguno positivo; `PairCount` (`model_validation.cpp`)
+rechaza ahora un recuento positivo con un error explícito.
 
 ## Diseño propuesto
 
@@ -140,7 +208,7 @@ usa el encaje, la vía ya probada. Si no cabe, se usa la ruta de redimensionado:
   `extra`.
 - **Validación** (`model_validation`): `ReadModelEngineCounts`,
   `ModelEngineBuffers`, `ModelEngineSize` y `EncodeModelEngineExtra` replican
-  `0x10867AC`. `PlanModelResize` exige:
+  la fase 0 (`0x75908C` en D3D9, `0x10867AC` en DX11). `PlanModelResize` exige:
   - que el `extra` del paquete repita la cabecera original;
   - el mismo número de mallas y de pares que el original;
   - que la suma de búferes del motor sea igual al tamaño del reemplazo;

@@ -131,7 +131,7 @@ void TestModelDeletion(const std::filesystem::path& temporary_root) {
 #endif
 }
 void TestModelResize(const std::filesystem::path& temporary_root) {
-    // The engine model (MeshResourceArray 0x10867AC) on the synthetic layout.
+    // The engine model (mesh cache 0x75908C / 0x10867AC) on the synthetic layout.
     const auto original = MakeSkinnedModel({0, 1, 2, 3, 4}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}});
     ModelEngineCounts counts;
     Require(ReadModelEngineCounts(original, counts) && counts.header_size == 101 && counts.pairs == 0 &&
@@ -271,6 +271,40 @@ void TestModelUncheckedFit(const std::filesystem::path& temporary_root) {
     TestModelRuntime(candidate, original);
 #endif
 }
+// A one-entry pair table after its count (offset 24): count -1 with {i32, f32},
+// as in every packaged .2, or count 1 with a bare i32, which the extra
+// generator 0x758A60 also reads but no packaged .2 uses.
+std::vector<std::byte> WithPairTable(std::vector<std::byte> model, const std::int32_t count) {
+    const std::size_t entry = count < 0 ? 8 : 4;
+    std::uint32_t header{};
+    std::memcpy(&header, model.data(), sizeof(header));
+    model.insert(model.begin() + 28, entry, std::byte{});
+    Put(model, 0, header + static_cast<std::uint32_t>(entry));
+    Put(model, 24, count);
+    Put(model, 28, std::int32_t{3}); // pair integer; a skinned mesh ignores it
+    if (count < 0) Put(model, 32, 1.0f);
+    return model;
+}
+void TestModelPairTable() {
+    const auto mesh = MakeSkinnedModel({0, 1, 2, 3, 4}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}});
+    const auto larger = MakeSkinnedModel({0, 1, 2, 3, 4, 5}, {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}, {3, 4, 5}});
+    const auto original = WithPairTable(mesh, -1);
+    ModelEngineCounts counts;
+    Require(ReadModelEngineCounts(original, counts) && counts.header_size == 109 && counts.pairs == 1 &&
+            counts.meshes[0].pair == 3 && ModelEngineSize(counts) == original.size(), "negative pair table misread");
+    const auto extra = EncodeModelEngineExtra(counts);
+    const auto plan = PlanModelResize(original, WithPairTable(larger, -1), extra);
+    Require(bool(plan) && plan.replacement_header_size == 109 && plan.extra.size() == extra.size() &&
+            bool(ValidateModelEdit(original, original, ModelEditContract::unchecked)), "negative pair table rejected");
+    // Positive: every reader refuses it and says why.
+    const auto positive = WithPairTable(mesh, 1);
+    const auto named = [](const std::wstring& error) { return error.find(L"positive pair count 1") != std::wstring::npos; };
+    Require(!ReadModelEngineCounts(positive, counts) && counts.meshes.empty(), "positive pair count read");
+    Require(named(PlanModelResize(original, WithPairTable(larger, 1), extra).error) &&
+            named(FitModelReplacement(original, positive).error) &&
+            named(ValidateModelEdit(positive, positive, ModelEditContract::unchecked).error),
+            "positive pair count not refused by name");
+}
 }
 
 // One triangle; both layouts exercise the real parser and runtime writer.
@@ -402,6 +436,7 @@ void TestModels(const std::filesystem::path& temporary_root) {
     TestModelDeletion(temporary_root);
     TestModelUncheckedFit(temporary_root);
     TestModelResize(temporary_root);
+    TestModelPairTable();
     Require(ParseLoaderConfig("[loader]").config.models == ModelMode::off, "models default on");
     for (const auto* value : {"off", "observe", "override_positions", "override_shape", "override_unchecked"}) {
         const auto cfg = ParseLoaderConfig(std::string("[loader]\nmodels=") + value);
